@@ -1,3 +1,5 @@
+import json
+
 from datasets import load_dataset
 
 from rllm.data.dataset import DatasetRegistry
@@ -15,6 +17,9 @@ SWE_DATASETS = [
 def prepare_swe_data():
     """
     Prepare and register SWE datasets for training and testing.
+    
+    This function processes SWE datasets and saves them in a format suitable for training.
+    Each row is converted to have standardized fields that can be serialized to parquet.
 
     Returns:
         tuple: (train_datasets, test_datasets) - lists of registered datasets
@@ -23,8 +28,35 @@ def prepare_swe_data():
     def make_process_fn():
         def process_fn(row):
             row_dict = dict(row)
-            # problem_statement = row_dict.get("problem_statement", "")
-            return row_dict
+            problem_statement = row_dict.get("problem_statement", "")
+            
+            # Create a flat structure with all fields as simple types (strings, numbers)
+            # Complex structures are serialized to JSON strings for parquet compatibility
+            return {
+                # Core fields expected by the training pipeline
+                "question": problem_statement,
+                "ground_truth": "",  # SWE tasks are evaluated by patch application, not simple string match
+                "data_source": "swe",
+                
+                # SWE-specific fields
+                "instance_id": row_dict.get("instance_id", ""),
+                "repo": row_dict.get("repo", ""),
+                "base_commit": row_dict.get("base_commit", ""),
+                "patch": row_dict.get("patch", ""),
+                "test_patch": row_dict.get("test_patch", ""),
+                "problem_statement": problem_statement,
+                "hints_text": row_dict.get("hints_text", ""),
+                "created_at": str(row_dict.get("created_at", "")),
+                "version": str(row_dict.get("version", "")),
+                "environment_setup_commit": row_dict.get("environment_setup_commit", ""),
+                
+                # Serialize complex fields to JSON strings
+                "FAIL_TO_PASS": json.dumps(row_dict.get("FAIL_TO_PASS", [])),
+                "PASS_TO_PASS": json.dumps(row_dict.get("PASS_TO_PASS", [])),
+                
+                # Store all original data as JSON string for reference
+                "metadata": json.dumps(row_dict),
+            }
 
         return process_fn
 

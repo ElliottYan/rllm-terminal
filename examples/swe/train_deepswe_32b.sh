@@ -1,5 +1,9 @@
 set -x
 
+pip3 install hope==3.6.8 -i http://pypi.sankuai.com/simple/ --trusted-host pypi.sankuai.com --upgrade
+
+MODEL_PATH=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03/huggingface.co/Qwen/Qwen3-4B-Instruct-2507
+
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:False"
 export VLLM_USE_V1=1
@@ -7,19 +11,29 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 export VLLM_ENGINE_ITERATION_TIMEOUT_S=100000000000
 
 # Find the directory where rllm package is located
-RLLM_DIR=$(python3 -c "import rllm; import os; print(os.path.dirname(os.path.dirname(rllm.__file__)))")
+#RLLM_DIR=$(python3 -c "import rllm; import os; print(os.path.dirname(os.path.dirname(rllm.__file__)))")
+RLLM_DIR=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03/jgg_code/
+
+LOCAL_DIR=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03/
+source $LOCAL_DIR/envs.sh
+
+EXP=swe_debug
+PROJ_DIR=${LOCAL_DIR}/workspace/exp/${EXP}
+mkdir -p $PROJ_DIR
+
+offload=False
 
 python3 -m rllm.trainer.verl.train_agent_ppo \
     algorithm.adv_estimator=rloo \
-    data.train_files=${RLLM_DIR}/data/swe/R2E_Gym_Subset.parquet \
-    data.val_files=${RLLM_DIR}/data/swe/SWE_Bench_Verified.parquet \
+    data.train_files=${RLLM_DIR}/rllm//data/datasets/R2E_Gym_Subset/train.parquet \
+    data.val_files=${RLLM_DIR}/rllm/data/datasets/SWE_Bench_Verified/test.parquet \
     data.train_batch_size=8 \
     data.val_batch_size=512 \
     data.max_prompt_length=4096 \
     data.max_response_length=32768 \
     data.filter_overlong_prompts=True \
     data.filter_overlong_prompts_workers=32 \
-    actor_rollout_ref.model.path=Qwen/Qwen3-32B \
+    actor_rollout_ref.model.path=$MODEL_PATH \
     actor_rollout_ref.hybrid_engine=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
@@ -34,12 +48,12 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
-    actor_rollout_ref.actor.ulysses_sequence_parallel_size=8 \
+    actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \
-    actor_rollout_ref.rollout.tensor_model_parallel_size=8 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.mode="async" \
     actor_rollout_ref.rollout.enforce_eager=False \
@@ -57,8 +71,8 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     trainer.project_name='deepscaler-agent' \
     trainer.experiment_name='swe-agent-rl' \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=8 \
-    trainer.nnodes=8 \
+    trainer.n_gpus_per_node=2 \
+    trainer.nnodes=1 \
     trainer.save_freq=10 \
     trainer.test_freq=10 \
     trainer.default_hdfs_dir=null \
@@ -66,5 +80,6 @@ python3 -m rllm.trainer.verl.train_agent_ppo \
     rllm.agent.name=sweagent \
     rllm.agent.max_steps=50 \
     rllm.agent.overlong_filter=True \
-    rllm.rllm.agent.trajectory_timeout=5400 \
+    +rllm.rllm.agent.trajectory_timeout=5400 \
     trainer.total_epochs=1000
+
