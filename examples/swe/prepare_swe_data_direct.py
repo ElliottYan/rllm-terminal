@@ -45,9 +45,9 @@ def prepare_swe_data_direct(output_dir=None):
         def process_fn(row):
             row_dict = dict(row)
             problem_statement = row_dict.get("problem_statement", "")
-            
-            # 创建训练格式的数据（与 scripts/data/swe_dataset.py 一致）
-            # 所有嵌套结构都序列化为 JSON 字符串
+
+            # 创建训练格式的数据
+            # extra_info 保持为字典（Verl 期望），但其中的复杂字段序列化为 JSON
             return {
                 "data_source": "swe",
                 "prompt": json.dumps([
@@ -56,7 +56,27 @@ def prepare_swe_data_direct(output_dir=None):
                 ]),
                 "ability": "swe",
                 "reward_model": json.dumps({"style": "rule", "ground_truth": ""}),
-                "extra_info": json.dumps(row_dict),
+                "extra_info": {
+                    # Verl 数据集加载器需要的字段
+                    "index": row_dict.get("index", 0),  # 索引
+                    "uid": row_dict.get("instance_id", ""),  # 唯一标识符
+
+                    # SWE 相关字段
+                    "instance_id": row_dict.get("instance_id", ""),
+                    "repo": row_dict.get("repo", ""),
+                    "base_commit": row_dict.get("base_commit", ""),
+                    "patch": row_dict.get("patch", ""),
+                    "test_patch": row_dict.get("test_patch", ""),
+                    "problem_statement": problem_statement,
+                    "hints_text": row_dict.get("hints_text", ""),
+                    "created_at": str(row_dict.get("created_at", "")),
+                    "version": str(row_dict.get("version", "")),
+                    "environment_setup_commit": row_dict.get("environment_setup_commit", ""),
+
+                    # 复杂字段序列化为 JSON 字符串
+                    "FAIL_TO_PASS": json.dumps(row_dict.get("FAIL_TO_PASS", [])),
+                    "PASS_TO_PASS": json.dumps(row_dict.get("PASS_TO_PASS", [])),
+                },
             }
         
         return process_fn
@@ -139,5 +159,13 @@ if __name__ == "__main__":
     print("first_row = df.iloc[0]")
     print("prompt = json.loads(first_row['prompt'])")
     print("reward_model = json.loads(first_row['reward_model'])")
-    print("extra_info = json.loads(first_row['extra_info'])")
+    print("")
+    print("# extra_info 现在是字典，可以直接访问")
+    print("extra_info = first_row['extra_info']")
+    print("print(extra_info['instance_id'])")
+    print("print(extra_info['problem_statement'])")
+    print("")
+    print("# 复杂字段仍然是 JSON 字符串")
+    print("fail_to_pass = json.loads(extra_info['FAIL_TO_PASS'])")
+    print("pass_to_pass = json.loads(extra_info['PASS_TO_PASS'])")
     print("```")
