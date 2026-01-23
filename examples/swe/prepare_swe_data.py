@@ -29,7 +29,7 @@ def prepare_swe_data():
         def process_fn(row):
             row_dict = dict(row)
             problem_statement = row_dict.get("problem_statement", "")
-            
+
             # Create a flat structure with all fields as simple types (strings, numbers)
             # Complex structures are serialized to JSON strings for parquet compatibility
             return {
@@ -37,7 +37,11 @@ def prepare_swe_data():
                 "question": problem_statement,
                 "ground_truth": "",  # SWE tasks are evaluated by patch application, not simple string match
                 "data_source": "swe",
-                
+
+                # Required fields for Verl dataset indexing
+                "index": row_dict.get("index", 0),  # Verl expects this in extra_info.index
+                "uid": row_dict.get("instance_id", ""),  # Unique identifier
+
                 # SWE-specific fields
                 "instance_id": row_dict.get("instance_id", ""),
                 "repo": row_dict.get("repo", ""),
@@ -49,13 +53,10 @@ def prepare_swe_data():
                 "created_at": str(row_dict.get("created_at", "")),
                 "version": str(row_dict.get("version", "")),
                 "environment_setup_commit": row_dict.get("environment_setup_commit", ""),
-                
-                # Serialize complex fields to JSON strings
+
+                # Serialize complex fields to JSON strings for parquet compatibility
                 "FAIL_TO_PASS": json.dumps(row_dict.get("FAIL_TO_PASS", [])),
                 "PASS_TO_PASS": json.dumps(row_dict.get("PASS_TO_PASS", [])),
-                
-                # Store all original data as JSON string for reference
-                "metadata": json.dumps(row_dict),
             }
 
         return process_fn
