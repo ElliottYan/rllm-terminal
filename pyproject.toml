@@ -138,7 +138,7 @@ ignore = [
 
 [tool.setuptools.packages.find]
 where   = ["."]
-include = ["rllm", "rllm.*"]
+include = ["rllm", "rllm.*", "rllm_ext", "rllm_ext.*"]
 
 [tool.mypy]
 plugins = ["pydantic.mypy"]

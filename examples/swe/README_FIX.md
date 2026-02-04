@@ -41,11 +41,10 @@
    "metadata": json.dumps(row_dict),
    ```
 
-3. **确保所有值都是简单类型**：
-   - 字符串 (str)
-   - 数字 (int, float)
-   - 布尔值 (bool)
-   - None
+3. **保留必要的字典结构字段**：
+   - `index` 和 `uid` 等 Verl 需要的字段保持为顶级字段
+   - 复杂嵌套结构序列化为 JSON 字符串
+   - 确保所有值都是简单类型（str, int, float, bool, None）
 
 ### 为什么不修改 rllm/data/dataset.py？
 
@@ -96,6 +95,8 @@ python test_prepare_swe.py
     "question": str,              # problem_statement
     "ground_truth": str,          # 空字符串（SWE 任务通过 patch 评估）
     "data_source": str,           # "swe"
+    "index": int,                 # 数据索引（Verl 数据集需要）
+    "uid": str,                   # 唯一标识符
     "instance_id": str,           # 任务唯一标识
     "repo": str,                  # 仓库名
     "base_commit": str,           # 基础提交
@@ -108,15 +109,16 @@ python test_prepare_swe.py
     "environment_setup_commit": str,  # 环境设置提交
     "FAIL_TO_PASS": str,          # JSON 字符串，失败->通过的测试
     "PASS_TO_PASS": str,          # JSON 字符串，通过->通过的测试
-    "metadata": str,              # JSON 字符串，所有原始数据
 }
 ```
 
 ### train_verl.parquet 格式
 由 `apply_verl_postprocessing` 自动生成，包含：
-- `prompt`: 占位符提示
-- `reward_model`: 奖励模型配置
-- `extra_info`: 上述所有字段的字典
+- `prompt`: 占位符提示（JSON 字符串格式）
+- `reward_model`: 奖励模型配置（JSON 字符串格式）
+- `extra_info`: 上述所有字段的字典（包含 `index`, `uid` 等 Verl 需要的字段）
+
+**重要**：`extra_info` 字段必须是字典格式，因为 Verl 的数据集加载器会直接访问 `extra_info.index` 等字段。如果序列化为 JSON 字符串，Verl 会无法访问这些字段。
 
 ## 参考
 

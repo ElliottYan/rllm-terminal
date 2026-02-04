@@ -84,3 +84,15 @@ To train a math reasoning agent with tool usage:
 ```bash
 bash examples/math_tool/train_math_with_tool.sh
 ```
+
+### Workflow Training (with prediction step)
+
+This variant uses the **workflow** training stack and adds an explicit prediction sub-step per turn:
+
+action → *predict outcome* → env.step(action)
+
+Run:
+
+```bash
+python examples/math_tool/train_math_with_tool_prediction_workflow.py
+```
