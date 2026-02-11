@@ -14,25 +14,25 @@ from rllm_ext.agents.predictive_tool_agent import PredictionRecord, PredictiveTo
 @dataclass
 class PredictionConfig:
     """
-    Configuration for the prediction sub-step.
+    Configuration for prediction sub-step.
     """
 
     enabled: bool = True
     max_tokens: int = 256
-    add_prediction_to_messages: bool = True  # if True, the prediction becomes part of the training text
+    add_prediction_to_messages: bool = True  # if True, prediction becomes part of training text
 
 
 class PredictiveToolWorkflow(Workflow):
     """
-    Workflow that adds an explicit *prediction* sub-step before executing the tool action.
+    Workflow that adds an explicit *prediction* sub-step before executing tool action.
 
     Per turn:
     1) model produces action (tool calls)
-    2) model predicts the outcome of executing that action (text-only)
+    2) model predicts the outcome of executing that action (with explicit tags)
     3) environment executes the action and returns tool outputs / observations
 
     Design goals:
-    - Use the existing rllm v0.2 workflow training stack (AgentWorkflowEngine + AgentWorkflowPPOTrainer)
+    - Use existing rllm v0.2 workflow training stack (AgentWorkflowEngine + AgentWorkflowPPOTrainer)
     - Keep all changes isolated from core `rllm` by implementing this workflow in `rllm_ext`
     - Store prediction artifacts in `Step.info` for future loss design
     """
@@ -76,6 +76,7 @@ class PredictiveToolWorkflow(Workflow):
     def _build_prediction_prompt(self, action_obj: Any) -> str:
         """
         Build a stable, minimal instruction that asks the model to predict what will happen.
+        Uses explicit <prediction>...</prediction> tags for extraction.
         """
         # ToolAgent emits OpenAI-style tool calls as list[dict]; we keep it generic.
         try:
@@ -86,11 +87,8 @@ class PredictiveToolWorkflow(Workflow):
         return (
             "You are now in **PREDICTION MODE**.\n"
             "- Do NOT call any tools.\n"
-            "- Do NOT output any `<tool_call>...</tool_call>` blocks.\n"
+            "- Do NOT output any ``` ... ``` blocks.\n"
             "- Output MUST follow this exact format:\n\n"
-            "<think>\n"
-            "... reasoning ...\n"
-            "</think>\n"
             "<prediction>\n"
             "... final predicted tool result text only ...\n"
             "</prediction>\n\n"
@@ -127,12 +125,12 @@ class PredictiveToolWorkflow(Workflow):
             # 1) Action
             output: ModelOutput = await self.rollout_engine.get_model_response(self.agent.chat_completions, application_id=f"{uid}:act:{step_idx}", **kwargs)
             response = output.text
-            action = self.agent.update_from_model(response)  # Action dataclass
+            action = self.agent.update_from_model(response, return_action_dict=True)  # Get action but don't append to messages yet
             raw_action = action.action
 
             # 2) Prediction sub-step
             prediction_text = None
-            prediction_prompt = None
+            prediction_raw = None
             if self.prediction_cfg.enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
                 pred_messages = self.agent.chat_completions.copy()
@@ -144,18 +142,10 @@ class PredictiveToolWorkflow(Workflow):
                     max_tokens=self.prediction_cfg.max_tokens,
                     **kwargs,
                 )
-                # If the underlying chat template supports thinking tags, ModelOutput will
-                # separate `reasoning` and `content` based on `</think>`.
-                prediction_raw_text = pred_output.text or ""
-                prediction_reasoning = (pred_output.reasoning or "").strip()
-                prediction_final = (pred_output.content or "").strip()
 
-                # Prefer the <prediction>...</prediction> block if present; otherwise fall back.
-                prediction_from_tag = self._extract_tagged_block(prediction_final or prediction_raw_text, "prediction")
-                if prediction_from_tag is not None:
-                    prediction_text = prediction_from_tag
-                else:
-                    prediction_text = prediction_final if prediction_final else prediction_raw_text.strip()
+                # Extract prediction from <prediction>...</prediction> tags
+                prediction_raw_text = pred_output.text or ""
+                prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
 
                 # Store for future loss design
                 self.agent.set_step_prediction(
@@ -164,22 +154,20 @@ class PredictiveToolWorkflow(Workflow):
                         prediction=prediction_text,
                         metadata={
                             "step_idx": step_idx,
-                            "reasoning": prediction_reasoning,
                             "raw_text": prediction_raw_text,
-                            "tagged_prediction": self._extract_tagged_block(prediction_final or prediction_raw_text, "prediction"),
                         },
                     )
                 )
 
-                # Optionally make prediction part of the actual trajectory text (so it can be learned via RL later)
+                # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
                 if self.prediction_cfg.add_prediction_to_messages:
                     # NOTE: this directly mutates ToolAgent's message history (kept intentionally isolated to rllm_ext).
-                    raw = prediction_raw_text.strip()
-                    # Avoid double-wrapping if the model already followed the required format.
-                    if "<prediction>" in raw and "</prediction>" in raw:
-                        self.agent.messages.append({"role": "assistant", "content": raw})
-                    else:
-                        self.agent.messages.append({"role": "assistant", "content": f"<prediction>\n{raw}\n</prediction>"})
+                    # Insert prediction messages BEFORE the action response
+                    # Order: action -> prediction -> tool_output
+                    self.agent.messages.append({"role": "user", "content": prediction_prompt})
+                    self.agent.messages.append({"role": "assistant", "content": prediction_raw_text})
+                    # Now append the action response (tool calls)
+                    self.agent.messages.append({"role": "assistant", "content": response, "tool_calls": raw_action})
 
             # 3) Execute in env (ToolEnvironment expects raw tool_calls list/dict/str, not Action dataclass)
             next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, raw_action)
@@ -193,9 +181,7 @@ class PredictiveToolWorkflow(Workflow):
                 cur_step.info.update(step_info or {})
                 if prediction_text is not None:
                     cur_step.info["rllm_ext.prediction_text"] = prediction_text
-                    cur_step.info["rllm_ext.prediction_reasoning"] = prediction_reasoning
                     cur_step.info["rllm_ext.prediction_raw_text"] = prediction_raw_text
-                    cur_step.info["rllm_ext.prediction_tagged_text"] = self._extract_tagged_block(prediction_final or prediction_raw_text, "prediction")
                 if prediction_prompt is not None:
                     cur_step.info["rllm_ext.prediction_prompt"] = prediction_prompt
 
@@ -210,4 +196,3 @@ class PredictiveToolWorkflow(Workflow):
         super().reset(task, uid)
         # Keep env reset compatible with ToolEnvironment (returns (task, info))
         return self.env.reset(task)
-

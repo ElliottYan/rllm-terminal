@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from rllm.agents.tool_agent import ToolAgent
@@ -22,7 +22,7 @@ class PredictiveToolAgent(ToolAgent):
     Notes:
     - We intentionally keep this lightweight; the workflow is responsible for *asking*
       the model to produce predictions and for attaching them to the current step.
-    - This class only provides a stable place (Step.info keys) to store the prediction
+    - This class only provides a stable place (Step.info keys) to store prediction
       data without modifying `rllm.agents.tool_agent.ToolAgent`.
     """
 
@@ -36,9 +36,11 @@ class PredictiveToolAgent(ToolAgent):
         step = self.get_current_state()
         if step is None:
             return
+        # Ensure step.info is a dict before accessing it
+        if step.info is None:
+            step.info = {}
         step.info[self.INFO_KEY_PREDICTION] = {
             "prompt": prediction.prompt,
             "prediction": prediction.prediction,
             "metadata": prediction.metadata or {},
         }
-

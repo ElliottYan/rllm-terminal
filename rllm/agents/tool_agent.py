@@ -123,7 +123,7 @@ class ToolAgent(BaseAgent):
             # Ensure arguments within tool_calls_dict are strings if needed by downstream processing
             for call in tool_calls_dict:
                 if isinstance(call.get("function", {}).get("arguments"), dict):
-                    call["function"]["arguments"] = json.dumps(call["function"]["arguments"])
+                    call["function"]["arguments"] = json.dumps(call.get("function", {}).get("arguments"))
             # Add tool_calls to assistant message for proper chat completion format
             assistant_message["tool_calls"] = tool_calls_dict
         else:
