@@ -20,12 +20,26 @@ def main(config):
     This keeps core `rllm` untouched by implementing everything in `rllm_ext`.
     """
     # Set TENSORBOARD_DIR environment variable before training starts
-    # This ensures verl's Tracking class uses the correct path
-    original_cwd = get_original_cwd()
-    tensorboard_dir = os.path.join(original_cwd, "tensorboard", "predict_test")
-    os.environ["TENSORBOARD_DIR"] = tensorboard_dir
-    os.makedirs(tensorboard_dir, exist_ok=True)
-    print(f"TENSORBOARD_DIR set to: {os.environ['TENSORBOARD_DIR']}")
+    # Priority: 1) Existing TENSORBOARD_DIR env var
+    #            2) config.trainer.tensorboard_dir if it exists and is not None
+    #            3) Fallback to <original_cwd>/tensorboard/predict_test
+    if "TENSORBOARD_DIR" not in os.environ or not os.environ.get("TENSORBOARD_DIR"):
+        if hasattr(config, "trainer") and hasattr(config.trainer, "tensorboard_dir"):
+            tb_dir_from_cfg = config.trainer.tensorboard_dir
+            if tb_dir_from_cfg is not None:
+                os.environ["TENSORBOARD_DIR"] = tb_dir_from_cfg
+                print(f"TENSORBOARD_DIR set from config.trainer.tensorboard_dir: {tb_dir_from_cfg}")
+        else:
+            # Fallback to default path
+            original_cwd = get_original_cwd()
+            tensorboard_dir = os.path.join(original_cwd, "tensorboard", "predict_test")
+            os.environ["TENSORBOARD_DIR"] = tensorboard_dir
+            print(f"TENSORBOARD_DIR set to default path: {tensorboard_dir}")
+    else:
+        print(f"TENSORBOARD_DIR already set: {os.environ['TENSORBOARD_DIR']}")
+
+    # Ensure directory exists
+    os.makedirs(os.environ["TENSORBOARD_DIR"], exist_ok=True)
 
     train_dataset = DatasetRegistry.load_dataset("deepscaler_math", "train")
     test_dataset = DatasetRegistry.load_dataset("aime2024", "test")
