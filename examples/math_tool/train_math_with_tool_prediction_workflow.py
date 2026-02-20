@@ -1,5 +1,7 @@
 import hydra
+import os
 
+from hydra.utils import get_original_cwd
 from rllm.data.dataset import DatasetRegistry
 from rllm.rewards.reward_fn import math_reward_fn
 from rllm.trainer.agent_trainer import AgentTrainer
@@ -17,6 +19,14 @@ def main(config):
 
     This keeps core `rllm` untouched by implementing everything in `rllm_ext`.
     """
+    # Set TENSORBOARD_DIR environment variable before training starts
+    # This ensures verl's Tracking class uses the correct path
+    original_cwd = get_original_cwd()
+    tensorboard_dir = os.path.join(original_cwd, "tensorboard", "predict_test")
+    os.environ["TENSORBOARD_DIR"] = tensorboard_dir
+    os.makedirs(tensorboard_dir, exist_ok=True)
+    print(f"TENSORBOARD_DIR set to: {os.environ['TENSORBOARD_DIR']}")
+
     train_dataset = DatasetRegistry.load_dataset("deepscaler_math", "train")
     test_dataset = DatasetRegistry.load_dataset("aime2024", "test")
 
