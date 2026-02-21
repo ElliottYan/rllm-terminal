@@ -59,6 +59,13 @@ def main(config):
     env_args = {
         "tools": ["python"],
         "reward_fn": math_reward_fn,
+        "similarity_config": {
+            "enabled": True,
+            "weight": 0.1,        # Max 0.1 reward per step for accurate predictions
+            "n": 4,               # BLEU-4 style n-gram similarity
+            "min_length": 4,      # Skip outputs shorter than 4 words
+            "smoothing": True,    # Add +1 smoothing
+        },
     }
 
     workflow_args = {

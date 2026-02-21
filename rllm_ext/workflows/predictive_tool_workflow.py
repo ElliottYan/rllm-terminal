@@ -205,7 +205,16 @@ class PredictiveToolWorkflow(Workflow):
                     self.agent.messages.append(action_message)
 
             # 3) Execute in env (ToolEnvironment expects raw tool_calls list/dict/str, not Action dataclass)
-            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, raw_action)
+            # Pass prediction via enhanced action format for similarity reward computation
+            enhanced_action = {"tool_calls": raw_action}
+            if prediction_text is not None:
+                enhanced_action["prediction"] = {
+                    "text": prediction_text,
+                    "raw_text": prediction_raw_text,
+                    "prompt": prediction_prompt,
+                }
+
+            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, enhanced_action)
             self.agent.update_from_env(next_obs, reward, done, step_info)
 
             # Update the current Step fields for training
