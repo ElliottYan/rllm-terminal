@@ -22,8 +22,13 @@ export PYTHONPATH=./rllm-terminal:$PYTHONPATHie
 export TENSORBOARD_DIR=$LOCAL_PWD/tensorboard/$EXP
 mkdir -p $TENSORBOARD_DIR
 
+
+NNODE=1
+NGPUS=2
+
 # if [ $rank -eq 0 ]; then
-python3 /workdir/rllm-terminal/examples/math_tool/train_math_with_tool.py \
+# python3 /workdir/rllm-terminal/examples/math_tool/train_math_with_tool.py \
+python3 $LOCAL_PWD/examples/math_tool/train_math_with_tool_prediction_workflow.py \
     algorithm.adv_estimator=grpo \
     actor_rollout_ref.actor.policy_loss.loss_mode=gspo \
     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
@@ -68,8 +73,8 @@ python3 /workdir/rllm-terminal/examples/math_tool/train_math_with_tool.py \
     trainer.project_name='rllm-agent' \
     trainer.experiment_name='4b-math-tool' \
     trainer.val_before_train=False \
-    trainer.n_gpus_per_node=8 \
-    trainer.nnodes=2 \
+    trainer.n_gpus_per_node=$NGPUS \
+    trainer.nnodes=$NNODE \
     trainer.save_freq=100 \
     trainer.test_freq=20 \
     trainer.default_hdfs_dir=null \
