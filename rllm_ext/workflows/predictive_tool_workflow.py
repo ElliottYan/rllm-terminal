@@ -22,6 +22,7 @@ class PredictionConfig:
     enabled: bool = True
     max_tokens: int = 256
     add_prediction_to_messages: bool = True  # if True, prediction becomes part of training text
+    simple_tir: bool = False  # if True, filter out steps without tool calls from training data
 
 
 class PredictiveToolWorkflow(Workflow):
@@ -247,6 +248,30 @@ class PredictiveToolWorkflow(Workflow):
         episode = self._build_episode(task, uid, TerminationReason.MAX_TURNS_EXCEEDED)
         return episode
 
+    def _has_real_tool_call(self, step) -> bool:
+        """
+        Check if a step contains a real tool call (not just finish or empty).
+
+        Args:
+            step: Step object to check
+
+        Returns:
+            True if step has a real tool call, False otherwise
+        """
+        action = step.action
+        if not action or not isinstance(action, list):
+            return False
+
+        # Check if any tool call is not "finish"
+        for tool_call in action:
+            if isinstance(tool_call, dict):
+                function = tool_call.get("function", {})
+                tool_name = function.get("name", "")
+                if tool_name and tool_name != "finish":
+                    return True
+
+        return False
+
     def _build_episode(self, task: dict, uid: str, termination_reason: TerminationReason) -> Episode:
         """
         Build an Episode from the agent's trajectory.
@@ -261,6 +286,12 @@ class PredictiveToolWorkflow(Workflow):
         """
         # Get the trajectory from the agent (ToolAgent maintains its own trajectory)
         agent_trajectory = copy.deepcopy(self.agent.trajectory)
+
+        # Filter out steps without tool calls if simple_tir is enabled
+        if self.prediction_cfg.simple_tir:
+            original_steps = agent_trajectory.steps
+            filtered_steps = [step for step in original_steps if self._has_real_tool_call(step)]
+            agent_trajectory.steps = filtered_steps
 
         # Set the task on the trajectory
         agent_trajectory.task = task.get("question", task.get("task", ""))
@@ -281,6 +312,7 @@ class PredictiveToolWorkflow(Workflow):
             "num_steps": len(agent_trajectory.steps),
             "total_reward": total_reward,
             "prediction_enabled": self.prediction_cfg.enabled,
+            "simple_tir": self.prediction_cfg.simple_tir,
         }
 
         return episode
