@@ -1,12 +1,14 @@
-from __future__ import annotations
+gifrom __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
+from rllm.agents.agent import Episode
 from rllm.engine.rollout.rollout_engine import ModelOutput
 from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPING
-from rllm.workflows.workflow import TerminationEvent, TerminationReason, Workflow
+from rllm.workflows.workflow import TerminationReason, Workflow
 
 from rllm_ext.agents.predictive_tool_agent import PredictionRecord, PredictiveToolAgent
 
@@ -73,7 +75,7 @@ class PredictiveToolWorkflow(Workflow):
             # Keeping this as a runtime check makes failure modes obvious.
             raise TypeError(f"PredictiveToolWorkflow requires agent_cls to be PredictiveToolAgent when prediction is enabled, got {type(self.agent)}")
 
-    def _build_prediction_prompt(self, action_obj: Any) -> str:
+    def _build_prediction_prompt(self, action_obj: Any) -> Optional[str]:
         """
         Build a prediction prompt that encourages the model to reason before predicting.
 
@@ -89,6 +91,14 @@ class PredictiveToolWorkflow(Workflow):
             action_json = json.dumps(action_obj, ensure_ascii=False)
         except Exception:
             action_json = str(action_obj)
+        # if action_json['function']
+        try:
+            assert len(action_obj) == 1
+            assert action_obj[0]['type'] == 'function'
+        except:
+            breakpoint()
+        if action_obj[0]['function']['name'] == 'finish':
+            return None
 
         return (
             "You are now in **PREDICTION MODE**.\n"
@@ -124,7 +134,7 @@ class PredictiveToolWorkflow(Workflow):
             return None
         return text[start:stop].strip()
 
-    async def run(self, task: dict, uid: str, **kwargs):
+    async def run(self, task: dict, uid: str, **kwargs) -> Episode:
         """
         Execute a multi-step tool workflow, with an extra prediction call per step.
         """
@@ -146,75 +156,68 @@ class PredictiveToolWorkflow(Workflow):
             prediction_prompt = None
             if self.prediction_cfg.enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
-                pred_messages = self.agent.chat_completions.copy()
-                pred_messages.append({"role": "user", "content": prediction_prompt})
+                # the tool call is not a finish tool.
+                if prediction_prompt is not None:
+                    pred_messages = self.agent.chat_completions.copy()
+                    pred_messages.append({"role": "user", "content": prediction_prompt})
 
-                pred_output: ModelOutput = await self.rollout_engine.get_model_response(
-                    pred_messages,
-                    application_id=f"{uid}:pred:{step_idx}",
-                    max_tokens=self.prediction_cfg.max_tokens,
-                    **kwargs,
-                )
-
-                # Parse prediction: extract reasoning (before <prediction>) and content (inside <prediction>)
-                # This mirrors the parse_completion logic for tool calls which uses  as separator
-                prediction_raw_text = pred_output.text or ""
-
-                if "<prediction>" in prediction_raw_text:
-                    # Split on first <prediction> tag (mirrors partition("</think>") logic)
-                    reasoning_part, _, prediction_part = prediction_raw_text.partition("<prediction>")
-                    prediction_reasoning = reasoning_part.strip()
-
-                    # Extract content between <prediction> and </prediction>
-                    prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
-                else:
-                    # No <prediction> tag found - treat as error/missing prediction
-                    prediction_text = None
-
-                # Store for future loss design
-                self.agent.set_step_prediction(
-                    prediction=PredictionRecord(
-                        prompt=prediction_prompt,
-                        prediction=prediction_text,
-                        metadata={
-                            "step_idx": step_idx,
-                            "raw_text": prediction_raw_text,
-                            "reasoning": prediction_reasoning,
-                        },
+                    pred_output: ModelOutput = await self.rollout_engine.get_model_response(
+                        pred_messages,
+                        application_id=f"{uid}:pred:{step_idx}",
+                        max_tokens=self.prediction_cfg.max_tokens,
+                        **kwargs,
                     )
-                )
 
-                # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
-                if self.prediction_cfg.add_prediction_to_messages:
-                    # NOTE: this directly mutates ToolAgent's message history (kept intentionally isolated to rllm_ext).
-                    # Insert prediction messages BEFORE the action response
-                    # Order: action -> prediction -> tool_output
-                    self.agent.messages.append({"role": "user", "content": prediction_prompt})
+                    # Parse prediction: extract reasoning (before <prediction>) and content (inside <prediction>)
+                    # This mirrors the parse_completion logic for tool calls which uses  as separator
+                    prediction_raw_text = pred_output.text or ""
 
-                    # Store prediction with reasoning field (same format as action messages)
-                    # This ensures tokenize_and_mask will handle it correctly during training
-                    pred_message = {"role": "assistant", "content": prediction_text or ""}
-                    if prediction_reasoning:
-                        pred_message["reasoning"] = prediction_reasoning
-                    self.agent.messages.append(pred_message)
+                    if "<prediction>" in prediction_raw_text:
+                        # Split on first <prediction> tag (mirrors partition(")") logic)
+                        reasoning_part, _, prediction_part = prediction_raw_text.partition("<prediction>")
+                        prediction_reasoning = reasoning_part.strip()
 
-                    # Now append the action response (tool calls) with reasoning field
-                    action_message = {"role": "assistant", "content": output.content, "tool_calls": raw_action}
-                    if action_reasoning:
-                        action_message["reasoning"] = action_reasoning
-                    self.agent.messages.append(action_message)
+                        # Extract content between <prediction> and </prediction>
+                        prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
+                    else:
+                        # No <prediction> tag found - treat as error/missing prediction
+                        prediction_text = None
+
+                    # Store for future loss design
+                    self.agent.set_step_prediction(
+                        prediction=PredictionRecord(
+                            prompt=prediction_prompt,
+                            prediction=prediction_text,
+                            metadata={
+                                "step_idx": step_idx,
+                                "raw_text": prediction_raw_text,
+                                "reasoning": prediction_reasoning,
+                            },
+                        )
+                    )
+
+                    # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
+                    if self.prediction_cfg.add_prediction_to_messages:
+                        # NOTE: this directly mutates ToolAgent's message history (kept intentionally isolated to rllm_ext).
+                        # Insert prediction messages BEFORE the action response
+                        # Order: action -> prediction -> tool_output
+                        self.agent.messages.append({"role": "user", "content": prediction_prompt})
+
+                        # Store prediction with reasoning field (same format as action messages)
+                        # This ensures tokenize_and_mask will handle it correctly during training
+                        pred_message = {"role": "assistant", "content": prediction_text or ""}
+                        if prediction_reasoning:
+                            pred_message["reasoning"] = prediction_reasoning
+                        self.agent.messages.append(pred_message)
+
+                        # Now append the action response (tool calls) with reasoning field
+                        action_message = {"role": "assistant", "content": output.content, "tool_calls": raw_action}
+                        if action_reasoning:
+                            action_message["reasoning"] = action_reasoning
+                        self.agent.messages.append(action_message)
 
             # 3) Execute in env (ToolEnvironment expects raw tool_calls list/dict/str, not Action dataclass)
-            # Pass prediction via enhanced action format for similarity reward computation
-            enhanced_action = {"tool_calls": raw_action}
-            if prediction_text is not None:
-                enhanced_action["prediction"] = {
-                    "text": prediction_text,
-                    "raw_text": prediction_raw_text,
-                    "prompt": prediction_prompt,
-                }
-
-            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, enhanced_action)
+            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, raw_action)
             self.agent.update_from_env(next_obs, reward, done, step_info)
 
             # Update the current Step fields for training
@@ -229,12 +232,58 @@ class PredictiveToolWorkflow(Workflow):
                 if prediction_prompt is not None:
                     cur_step.info["rllm_ext.prediction_prompt"] = prediction_prompt
 
+            # Check for early termination conditions
             if output.finish_reason == "length":
-                raise TerminationEvent(TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED)
-            if done:
-                raise TerminationEvent(TerminationReason.ENV_DONE)
+                # Model response exceeded max length
+                episode = self._build_episode(task, uid, TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED)
+                return episode
 
-        raise TerminationEvent(TerminationReason.MAX_TURNS_EXCEEDED)
+            if done:
+                # Episode completed successfully
+                episode = self._build_episode(task, uid, TerminationReason.ENV_DONE)
+                return episode
+
+        # Max steps exceeded
+        episode = self._build_episode(task, uid, TerminationReason.MAX_TURNS_EXCEEDED)
+        return episode
+
+    def _build_episode(self, task: dict, uid: str, termination_reason: TerminationReason) -> Episode:
+        """
+        Build an Episode from the agent's trajectory.
+
+        Args:
+            task: Original task dictionary
+            uid: Episode unique identifier
+            termination_reason: Reason for episode termination
+
+        Returns:
+            Episode object with trajectory
+        """
+        # Get the trajectory from the agent (ToolAgent maintains its own trajectory)
+        agent_trajectory = copy.deepcopy(self.agent.trajectory)
+
+        # Set the task on the trajectory
+        agent_trajectory.task = task.get("question", task.get("task", ""))
+
+        # Create episode
+        episode = Episode()
+        episode.id = uid
+        episode.task = task
+        episode.termination_reason = termination_reason
+        episode.trajectories = [agent_trajectory]
+
+        # Compute episode-level correctness based on total reward
+        total_reward = sum(step.reward for step in agent_trajectory.steps)
+        episode.is_correct = total_reward > 0
+
+        # Add basic metrics
+        episode.metrics = {
+            "num_steps": len(agent_trajectory.steps),
+            "total_reward": total_reward,
+            "prediction_enabled": self.prediction_cfg.enabled,
+        }
+
+        return episode
 
     def reset(self, task: dict | None = None, uid: str | None = None):
         super().reset(task, uid)
