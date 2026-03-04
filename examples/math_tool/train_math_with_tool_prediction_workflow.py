@@ -75,7 +75,7 @@ def main(config):
         "env_args": env_args,
         "max_steps": 10,
         "prediction_cfg": {
-            "enabled": True,
+            "enabled": False,  # Disabled to avoid vLLM OOM (doubles vLLM calls when enabled)
             "max_tokens": 256,
             "add_prediction_to_messages": True,
         },
