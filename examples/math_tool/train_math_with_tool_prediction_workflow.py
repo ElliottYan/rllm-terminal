@@ -94,6 +94,26 @@ def main(config):
     }
     prediction_cfg = {**default_prediction_cfg, **prediction_cfg_from_config}
 
+    # trajectory_logging can be set either at:
+    # 1) top-level `trajectory_logging` (recommended for this example script)
+    # 2) `rllm.workflow.workflow_args.trajectory_logging`
+    trajectory_logging_from_config = {}
+    if config.get("trajectory_logging") is not None:
+        trajectory_logging_from_config = OmegaConf.to_container(
+            config.get("trajectory_logging"),
+            resolve=True,
+        )
+    elif (
+        config.get("rllm") is not None
+        and config.rllm.get("workflow") is not None
+        and config.rllm.workflow.get("workflow_args") is not None
+        and config.rllm.workflow.workflow_args.get("trajectory_logging") is not None
+    ):
+        trajectory_logging_from_config = OmegaConf.to_container(
+            config.rllm.workflow.workflow_args.get("trajectory_logging"),
+            resolve=True,
+        )
+
     agent_args = {
         "tools": ["python"],
         "parser_name": "qwen",
@@ -123,6 +143,8 @@ def main(config):
         "max_steps": int(max_steps),
         "prediction_cfg": prediction_cfg,
     }
+    if trajectory_logging_from_config:
+        workflow_args["trajectory_logging"] = trajectory_logging_from_config
 
     use_predictive_trainer = True
     if use_predictive_trainer is True:

@@ -14,11 +14,16 @@ Main exports:
 
 from rllm_ext.agents.predictive_tool_agent import PredictiveToolAgent, PredictionRecord
 from rllm_ext.environments.predictive_tool_env import PredictiveToolEnvironment
-from rllm_ext.workflows.predictive_tool_workflow import PredictiveToolWorkflow, PredictionConfig
+from rllm_ext.workflows.predictive_tool_workflow import (
+    PredictiveToolWorkflow,
+    PredictionConfig,
+    TrajectoryLoggingConfig,
+)
 
 __all__ = [
     "PredictiveToolWorkflow",
     "PredictionConfig",
+    "TrajectoryLoggingConfig",
     "PredictiveToolAgent",
     "PredictionRecord",
     "PredictiveToolEnvironment",
@@ -36,5 +41,4 @@ try:
     __all__.extend(["PredictiveAgentTrainer", "PredictiveAgentWorkflowEngine", "PredictiveAgentWorkflowTrainer", "PredictiveActor"])
 except ImportError:
     pass  # Training extensions are optional
-
 

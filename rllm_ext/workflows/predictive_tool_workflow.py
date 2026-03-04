@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from rllm.agents.agent import Episode
@@ -11,6 +14,8 @@ from rllm.trainer.env_agent_mappings import AGENT_CLASS_MAPPING, ENV_CLASS_MAPPI
 from rllm.workflows.workflow import TerminationReason, Workflow
 
 from rllm_ext.agents.predictive_tool_agent import PredictionRecord, PredictiveToolAgent
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,6 +28,19 @@ class PredictionConfig:
     max_tokens: int = 256
     add_prediction_to_messages: bool = True  # if True, prediction becomes part of training text
     simple_tir: bool = False  # if True, filter out steps without tool calls from training data
+
+
+@dataclass
+class TrajectoryLoggingConfig:
+    """
+    Configuration for saving trajectory and step logs to disk.
+    """
+
+    enabled: bool = False
+    log_dir: str = "logs/predictive_trajectories"
+    include_step_chat_completions: bool = True
+    include_final_messages: bool = True
+    pretty_json: bool = True
 
 
 class PredictiveToolWorkflow(Workflow):
@@ -48,6 +66,7 @@ class PredictiveToolWorkflow(Workflow):
         env_args: dict[str, Any] | None = None,
         max_steps: int = 5,
         prediction_cfg: dict[str, Any] | PredictionConfig | None = None,
+        trajectory_logging: dict[str, Any] | TrajectoryLoggingConfig | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -70,6 +89,13 @@ class PredictiveToolWorkflow(Workflow):
             self.prediction_cfg = prediction_cfg
         else:
             self.prediction_cfg = PredictionConfig(**prediction_cfg)
+
+        if trajectory_logging is None:
+            self.trajectory_logging = TrajectoryLoggingConfig()
+        elif isinstance(trajectory_logging, TrajectoryLoggingConfig):
+            self.trajectory_logging = trajectory_logging
+        else:
+            self.trajectory_logging = TrajectoryLoggingConfig(**trajectory_logging)
 
         if self.prediction_cfg.enabled and not isinstance(self.agent, PredictiveToolAgent):
             # We don't hard-require PredictiveToolAgent, but it provides a clean storage API.
@@ -161,6 +187,96 @@ class PredictiveToolWorkflow(Workflow):
 
         normalized_outputs = {str(k): str(v) for k, v in tool_outputs.items()}
         return normalized_outputs, " ".join(normalized_outputs.values())
+
+    @staticmethod
+    def _to_jsonable(value: Any) -> Any:
+        """
+        Convert values into JSON-serializable data recursively.
+        """
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): PredictiveToolWorkflow._to_jsonable(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [PredictiveToolWorkflow._to_jsonable(v) for v in value]
+        if hasattr(value, "value"):
+            return getattr(value, "value")
+        return str(value)
+
+    @staticmethod
+    def _sanitize_uid(uid: str) -> str:
+        return "".join(c if c.isalnum() or c in {"-", "_", "."} else "_" for c in uid)
+
+    def _step_log_record(self, step_idx: int, step) -> dict[str, Any]:
+        step_info = step.info if isinstance(step.info, dict) else {}
+        prediction_record = step_info.get(PredictiveToolAgent.INFO_KEY_PREDICTION, {}) or {}
+        prediction_metadata = prediction_record.get("metadata", {}) if isinstance(prediction_record, dict) else {}
+
+        actual_output = step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT, "")
+        if not isinstance(actual_output, str):
+            actual_output = str(actual_output)
+
+        return {
+            "step_idx": step_idx,
+            "reward": float(step.reward),
+            "done": bool(step.done),
+            "model_response": step.model_response,
+            "action": self._to_jsonable(step.action),
+            "observation_pre_action": self._to_jsonable(step.observation),
+            "tool_output": {
+                "actual_output_text": actual_output,
+                "tool_outputs": self._to_jsonable(step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS, {})),
+            },
+            "predict_target": {
+                "prediction": prediction_record.get("prediction", "") if isinstance(prediction_record, dict) else "",
+                "actual": actual_output,
+                "has_prediction": bool(prediction_record.get("prediction")) if isinstance(prediction_record, dict) else False,
+                "prompt": prediction_record.get("prompt", "") if isinstance(prediction_record, dict) else "",
+                "prediction_reasoning": prediction_metadata.get("reasoning", "") if isinstance(prediction_metadata, dict) else "",
+                "prediction_raw_text": prediction_metadata.get("raw_text", "") if isinstance(prediction_metadata, dict) else "",
+            },
+            "step_info": self._to_jsonable(step_info),
+            "whole_messages_step_snapshot": self._to_jsonable(step.chat_completions) if self.trajectory_logging.include_step_chat_completions else None,
+        }
+
+    def _save_episode_log(self, episode: Episode, uid: str, termination_reason: TerminationReason) -> None:
+        if not self.trajectory_logging.enabled:
+            return
+
+        try:
+            log_dir = Path(self.trajectory_logging.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            if episode.trajectories:
+                trajectory = episode.trajectories[0]
+                step_logs = [self._step_log_record(step_idx, step) for step_idx, step in enumerate(trajectory.steps)]
+                trajectory_task = trajectory.task
+            else:
+                step_logs = []
+                trajectory_task = ""
+
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            safe_uid = self._sanitize_uid(uid)
+            file_path = log_dir / f"{timestamp}_{safe_uid}.json"
+
+            payload = {
+                "episode_id": uid,
+                "timestamp_utc": timestamp,
+                "termination_reason": termination_reason.value if isinstance(termination_reason, TerminationReason) else str(termination_reason),
+                "task": self._to_jsonable(episode.task),
+                "trajectory_task": self._to_jsonable(trajectory_task),
+                "metrics": self._to_jsonable(episode.metrics),
+                "num_steps": len(step_logs),
+                "steps": step_logs,
+                "whole_messages_final": self._to_jsonable(self.agent.messages) if self.trajectory_logging.include_final_messages else None,
+            }
+
+            with file_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2 if self.trajectory_logging.pretty_json else None)
+                if not self.trajectory_logging.pretty_json:
+                    f.write("\n")
+        except Exception as exc:
+            logger.warning("Failed to save trajectory log for uid=%s: %s", uid, exc)
 
     async def run(self, task: dict, uid: str, **kwargs) -> Episode:
         """
@@ -361,6 +477,8 @@ class PredictiveToolWorkflow(Workflow):
             "prediction_enabled": self.prediction_cfg.enabled,
             "simple_tir": self.prediction_cfg.simple_tir,
         }
+
+        self._save_episode_log(episode, uid, termination_reason)
 
         return episode
 
