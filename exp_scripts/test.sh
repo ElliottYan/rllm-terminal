@@ -85,5 +85,8 @@ python3 $LOCAL_PWD/examples/math_tool/train_math_with_tool_prediction_workflow.p
     trainer.default_local_dir=$PROJ_DIR \
     rllm.agent.max_steps=2 \
     rllm.stepwise_advantage.enable=False \
+    +actor_rollout_ref.actor.prediction_loss_weight 0.0 \
+    +actor_rollout_ref.actor.prediction_loss_type cross_entropy \
+    +actor_rollout_ref.actor.prediction_temperature=1.0 \
     trainer.total_epochs=100
 # fi

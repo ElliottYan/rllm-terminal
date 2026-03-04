@@ -40,7 +40,7 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         """
         # Step 1: Configure prediction loss BEFORE parent init
         # (so actor can read the config during creation)
-        self._configure_prediction_loss()
+        # self._configure_prediction_loss()
 
         # Step 2: Call parent's init_workers
         # This creates:
@@ -58,34 +58,34 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
             if self.config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0:
                 self._inject_predictive_actor()
 
-    def _configure_prediction_loss(self):
-        """
-        Add prediction loss configuration to actor config.
+    # def _configure_prediction_loss(self):
+    #     """
+    #     Add prediction loss configuration to actor config.
 
-        Reads from config.rllm.prediction_loss if available, otherwise uses defaults.
-        """
-        # Get prediction loss config from hydra config
-        pred_config = self.config.rllm.get("prediction_loss", {})
+    #     Reads from config.rllm.prediction_loss if available, otherwise uses defaults.
+    #     """
+    #     # Get prediction loss config from hydra config
+    #     pred_config = self.config.rllm.get("prediction_loss", {})
 
-        # Set defaults
-        defaults = {
-            "enabled": False,  # Disabled by default
-            "weight": 0.1,
-            "loss_type": "cross_entropy",
-            "temperature": 1.0,
-        }
+    #     # Set defaults
+    #     defaults = {
+    #         "enabled": False,  # Disabled by default
+    #         "weight": 0.1,
+    #         "loss_type": "cross_entropy",
+    #         "temperature": 1.0,
+    #     }
 
-        # Merge with provided config
-        for key, value in defaults.items():
-            if key not in pred_config:
-                pred_config[key] = value
+    #     # Merge with provided config
+    #     for key, value in defaults.items():
+    #         if key not in pred_config:
+    #             pred_config[key] = value
 
-        # Add to actor config (actor is under actor_rollout_ref)
-        # This will be read when DataParallelPPOActor is created
-        if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
-            self.config.actor_rollout_ref.actor.prediction_loss_weight = pred_config["weight"] if pred_config["enabled"] else 0
-            self.config.actor_rollout_ref.actor.prediction_loss_type = pred_config["loss_type"]
-            self.config.actor_rollout_ref.actor.prediction_temperature = pred_config["temperature"]
+    #     # Add to actor config (actor is under actor_rollout_ref)
+    #     # This will be read when DataParallelPPOActor is created
+    #     if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
+    #         self.config.actor_rollout_ref.actor.prediction_loss_weight = pred_config["weight"] if pred_config["enabled"] else 0
+    #         self.config.actor_rollout_ref.actor.prediction_loss_type = pred_config["loss_type"]
+    #         self.config.actor_rollout_ref.actor.prediction_temperature = pred_config["temperature"]
 
     def _replace_workflow_engine(self):
         """
