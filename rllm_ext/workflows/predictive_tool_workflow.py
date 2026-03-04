@@ -92,13 +92,21 @@ class PredictiveToolWorkflow(Workflow):
             action_json = json.dumps(action_obj, ensure_ascii=False)
         except Exception:
             action_json = str(action_obj)
-        # if action_json['function']
-        try:
-            assert len(action_obj) == 1
-            assert action_obj[0]['type'] == 'function'
-        except:
-            breakpoint()
-        if action_obj[0]['function']['name'] == 'finish':
+        # Skip prediction when action format is unexpected or contains no executable tool call.
+        if not isinstance(action_obj, list) or not action_obj:
+            return None
+        has_real_tool_call = False
+        for tool_call in action_obj:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            tool_name = function.get("name")
+            if tool_name and tool_name != "finish":
+                has_real_tool_call = True
+                break
+        if not has_real_tool_call:
             return None
 
         return (
@@ -155,6 +163,7 @@ class PredictiveToolWorkflow(Workflow):
             prediction_reasoning = None
             prediction_raw_text = None
             prediction_prompt = None
+            prediction_payload = None
             if self.prediction_cfg.enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
                 # the tool call is not a finish tool.
@@ -196,6 +205,11 @@ class PredictiveToolWorkflow(Workflow):
                             },
                         )
                     )
+                    prediction_payload = {
+                        "text": prediction_text or "",
+                        "raw_text": prediction_raw_text or "",
+                        "prompt": prediction_prompt,
+                    }
 
                     # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
                     if self.prediction_cfg.add_prediction_to_messages:
@@ -217,8 +231,13 @@ class PredictiveToolWorkflow(Workflow):
                             action_message["reasoning"] = action_reasoning
                         self.agent.messages.append(action_message)
 
-            # 3) Execute in env (ToolEnvironment expects raw tool_calls list/dict/str, not Action dataclass)
-            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, raw_action)
+            # 3) Execute in env.
+            # For PredictiveToolEnvironment, pass enhanced action so similarity reward can be computed.
+            # Keep compatibility with ToolEnvironment by falling back to raw action otherwise.
+            env_action = raw_action
+            if prediction_payload is not None and hasattr(self.env, "similarity_config"):
+                env_action = {"tool_calls": raw_action, "prediction": prediction_payload}
+            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, env_action)
             self.agent.update_from_env(next_obs, reward, done, step_info)
 
             # Update the current Step fields for training
@@ -304,6 +323,7 @@ class PredictiveToolWorkflow(Workflow):
 
         # Compute episode-level correctness based on total reward
         total_reward = sum(step.reward for step in agent_trajectory.steps)
+        agent_trajectory.reward = float(total_reward)
         episode.is_correct = total_reward > 0
 
         # Add basic metrics
