@@ -97,18 +97,8 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
 
         prediction_targets = prediction_targets[:expected_size]
 
-        # Add prediction_targets to non_tensor_batch
-        # Use batch.__dict__ to directly modify the non_tensor_batch
-        from verl import DataProto
+        # Add prediction_targets directly to non_tensor_batch in-place
+        # This avoids creating a new DataProto and holding TensorDict references
+        batch.non_tensor_batch["prediction_targets"] = np.array(prediction_targets, dtype=object)
 
-        # Create a new DataProto by cloning and modifying
-        # This avoids the TensorDict boolean conversion issue
-        non_tensors = dict(batch.non_tensor_batch)
-        non_tensors["prediction_targets"] = np.array(prediction_targets, dtype=object)
-
-        # Use DataProto constructor directly to avoid from_dict's boolean check
-        return DataProto(
-            batch=batch.batch,
-            non_tensor_batch=non_tensors,
-            meta_info=batch.meta_info,
-        )
+        return batch
