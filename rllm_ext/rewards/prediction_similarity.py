@@ -101,6 +101,11 @@ def compute_bleu_style_score(prediction: str, reference: str, config: Similarity
     if not prediction or not reference:
         return 0.0
 
+    # Hard guard: if there is no unigram overlap at all, similarity must be zero.
+    # This avoids small non-zero rewards introduced purely by +1 smoothing.
+    if compute_ngram_overlap(prediction, reference, n=1, smoothing=False) == 0.0:
+        return 0.0
+
     pred_len = len(prediction.split())
     ref_len = len(reference.split())
 

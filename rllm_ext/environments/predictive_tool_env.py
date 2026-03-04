@@ -87,12 +87,13 @@ class PredictiveToolEnvironment(ToolEnvironment):
         """
         # Handle enhanced action format
         prediction = None
+        tool_calls = action
         if isinstance(action, dict) and "tool_calls" in action:
             prediction = action.get("prediction")
-            action = action["tool_calls"]
+            tool_calls = action["tool_calls"]
 
         # Call parent step() logic
-        next_obs, reward, done, info = super().step(action)
+        next_obs, reward, done, info = super().step(tool_calls)
 
         # Compute similarity reward if prediction available and tools were executed
         if (
@@ -100,14 +101,21 @@ class PredictiveToolEnvironment(ToolEnvironment):
             and prediction is not None
             and "tool_outputs" in next_obs
         ):
-            # Get all tool outputs
-            tool_outputs = next_obs["tool_outputs"]
+            tool_outputs = next_obs.get("tool_outputs", {})
+            actual_outputs = self._concatenate_tool_outputs(
+                tool_outputs=tool_outputs,
+                tool_calls=tool_calls,
+            )
+            prediction_text = self._resolve_prediction_text_for_reward(prediction)
+            actual_length = len(actual_outputs.split())
 
-            # Concatenate all outputs for comparison
-            actual_outputs = " ".join(tool_outputs.values())
-            prediction_text = prediction.get("text", "")
-
-            if actual_outputs and prediction_text:
+            # Keep behavior aligned with reward function:
+            # skip similarity computation entirely for very short actual outputs.
+            if (
+                actual_outputs
+                and prediction_text
+                and actual_length >= self.similarity_config.min_length
+            ):
                 similarity_reward = compute_prediction_similarity_reward(
                     prediction_text,
                     actual_outputs,
@@ -126,10 +134,93 @@ class PredictiveToolEnvironment(ToolEnvironment):
                     ),  # Normalized score [0, 1]
                     "raw_reward": similarity_reward,
                     "prediction_length": len(prediction_text.split()),
-                    "actual_length": len(actual_outputs.split()),
+                    "actual_length": actual_length,
+                    "prediction_for_reward": prediction_text,
+                    "actual_output_for_reward": actual_outputs,
                 }
 
         return next_obs, reward, done, info
+
+    @staticmethod
+    def _extract_tagged_block(text: str, tag: str) -> str | None:
+        """
+        Extract inner content from a simple XML-like tag: <tag>...</tag>.
+        Returns None when the block is missing or malformed.
+        """
+        if not isinstance(text, str) or not text:
+            return None
+
+        begin = f"<{tag}>"
+        end = f"</{tag}>"
+        start = text.find(begin)
+        if start < 0:
+            return None
+        start += len(begin)
+        stop = text.find(end, start)
+        if stop < 0:
+            return None
+
+        return text[start:stop].strip()
+
+    @classmethod
+    def _resolve_prediction_text_for_reward(cls, prediction: Any) -> str:
+        """
+        Resolve the prediction text used for reward.
+
+        Priority:
+        1) content inside <prediction>...</prediction> from raw_text
+        2) content inside <prediction>...</prediction> from text
+        3) plain text field as backward-compatible fallback
+        """
+        if not isinstance(prediction, dict):
+            return ""
+
+        raw_text = prediction.get("raw_text", "")
+        tagged_from_raw = cls._extract_tagged_block(raw_text, "prediction")
+        if tagged_from_raw:
+            return tagged_from_raw
+
+        text = prediction.get("text", "")
+        tagged_from_text = cls._extract_tagged_block(text, "prediction")
+        if tagged_from_text:
+            return tagged_from_text
+
+        return text.strip() if isinstance(text, str) else ""
+
+    @staticmethod
+    def _concatenate_tool_outputs(tool_outputs: Any, tool_calls: Any) -> str:
+        """
+        Concatenate current-step tool outputs in deterministic order.
+
+        Order policy:
+        1) IDs in the current tool call list order
+        2) remaining outputs ordered by key
+        """
+        if not isinstance(tool_outputs, dict) or not tool_outputs:
+            return ""
+
+        output_map = {str(k): str(v) for k, v in tool_outputs.items()}
+        ordered_values: list[str] = []
+        used_ids: set[str] = set()
+
+        if isinstance(tool_calls, list):
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                tool_call_id = tool_call.get("id")
+                if tool_call_id is None:
+                    continue
+                tool_call_id = str(tool_call_id)
+                if tool_call_id in output_map and tool_call_id not in used_ids:
+                    ordered_values.append(output_map[tool_call_id])
+                    used_ids.add(tool_call_id)
+
+        for tool_call_id in sorted(output_map.keys()):
+            if tool_call_id in used_ids:
+                continue
+            ordered_values.append(output_map[tool_call_id])
+
+        return " ".join(ordered_values).strip()
 
     @staticmethod
     def from_dict(env_args: dict) -> "PredictiveToolEnvironment":

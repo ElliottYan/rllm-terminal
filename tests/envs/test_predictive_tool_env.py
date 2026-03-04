@@ -197,6 +197,34 @@ class TestPredictiveToolEnvironment:
             # Total reward should include similarity
             assert reward == pytest.approx(0.1, abs=0.01)
 
+    def test_step_with_enhanced_action_uses_prediction_tag_content_for_reward(self):
+        """Reward should use only content inside <prediction>...</prediction>."""
+        env = PredictiveToolEnvironment(
+            task={"question": "test"},
+            similarity_config={"enabled": True, "weight": 0.1, "min_length": 1},
+        )
+        env.reset()
+
+        with patch.object(env, "_execute_tool_calls") as mock_execute:
+            mock_execute.return_value = {"call_1": "the result is 42"}
+
+            enhanced_action = {
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "python", "arguments": "{}"}}
+                ],
+                "prediction": {
+                    "text": "wrong fallback prediction",
+                    "raw_text": "Reasoning text.\n<prediction>the result is 42</prediction>\nTrailing",
+                    "prompt": "predict",
+                },
+            }
+
+            obs, reward, done, info = env.step(enhanced_action)
+
+            assert "prediction_similarity" in info
+            assert info["prediction_similarity"]["prediction_for_reward"] == "the result is 42"
+            assert reward == pytest.approx(0.1, abs=0.01)
+
     def test_step_with_enhanced_action_with_prediction_no_match(self):
         """Test enhanced action with no prediction match."""
         env = PredictiveToolEnvironment(
@@ -288,6 +316,39 @@ class TestPredictiveToolEnvironment:
             assert "prediction_similarity" in info
             # Concatenated actual: "first output second output"
             # Prediction: "first output second output" (perfect match)
+            assert info["prediction_similarity"]["score"] == pytest.approx(1.0, abs=0.01)
+
+    def test_step_with_enhanced_action_multiple_tool_outputs_respects_call_order(self):
+        """Concatenated actual output should follow current-step tool call order."""
+        env = PredictiveToolEnvironment(
+            task={"question": "test"},
+            similarity_config={"enabled": True, "weight": 0.1, "min_length": 1},
+        )
+        env.reset()
+
+        with patch.object(env, "_execute_tool_calls") as mock_execute:
+            # Intentionally reverse map insertion order from call order.
+            mock_execute.return_value = {
+                "call_2": "second output",
+                "call_1": "first output",
+            }
+
+            enhanced_action = {
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "python", "arguments": "{}"}},
+                    {"id": "call_2", "function": {"name": "python", "arguments": "{}"}},
+                ],
+                "prediction": {
+                    "text": "first output second output",
+                    "raw_text": "first output second output",
+                    "prompt": "predict",
+                },
+            }
+
+            obs, reward, done, info = env.step(enhanced_action)
+
+            assert "prediction_similarity" in info
+            assert info["prediction_similarity"]["actual_output_for_reward"] == "first output second output"
             assert info["prediction_similarity"]["score"] == pytest.approx(1.0, abs=0.01)
 
     def test_step_similarity_disabled(self):

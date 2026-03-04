@@ -26,7 +26,10 @@ class PredictionConfig:
 
     enabled: bool = True
     max_tokens: int = 256
-    add_prediction_to_messages: bool = True  # if True, prediction becomes part of training text
+    # If True, prediction prompt/answer are kept in live message history for future turns.
+    # The per-step training snapshot always includes prediction so RL reward is attached
+    # to the prediction assistant turn.
+    add_prediction_to_messages: bool = True
     simple_tir: bool = False  # if True, filter out steps without tool calls from training data
 
 
@@ -186,7 +189,8 @@ class PredictiveToolWorkflow(Workflow):
             return {}, ""
 
         normalized_outputs = {str(k): str(v) for k, v in tool_outputs.items()}
-        return normalized_outputs, " ".join(normalized_outputs.values())
+        ordered_output = " ".join(normalized_outputs[k] for k in sorted(normalized_outputs.keys()))
+        return normalized_outputs, ordered_output
 
     @staticmethod
     def _to_jsonable(value: Any) -> Any:
@@ -345,32 +349,32 @@ class PredictiveToolWorkflow(Workflow):
                         "raw_text": prediction_raw_text or "",
                         "prompt": prediction_prompt,
                     }
+                    # Route this step's RL signal to the prediction turn by ensuring the
+                    # step snapshot ends with the prediction assistant message.
+                    # `add_prediction_to_messages` only controls whether prediction text is
+                    # also persisted into live history for future turns.
+                    cur_step = self.agent.get_current_state()
+                    if action_reasoning:
+                        if self.agent.messages and self.agent.messages[-1].get("role") == "assistant":
+                            self.agent.messages[-1]["reasoning"] = action_reasoning
+                        if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
+                            cur_step.chat_completions[-1]["reasoning"] = action_reasoning
 
-                    # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
+                    prediction_prompt_message = {"role": "user", "content": prediction_prompt}
+                    pred_message = {"role": "assistant", "content": prediction_text or ""}
+                    if prediction_reasoning:
+                        pred_message["reasoning"] = prediction_reasoning
+
                     if self.prediction_cfg.add_prediction_to_messages:
-                        # NOTE: this directly mutates ToolAgent's message history (kept intentionally isolated to rllm_ext).
-                        # Order remains: action -> prediction -> tool_output.
-                        # The action message is already appended by ToolAgent.update_from_model().
-                        cur_step = self.agent.get_current_state()
-                        if action_reasoning:
-                            if self.agent.messages and self.agent.messages[-1].get("role") == "assistant":
-                                self.agent.messages[-1]["reasoning"] = action_reasoning
-                            if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
-                                cur_step.chat_completions[-1]["reasoning"] = action_reasoning
-
-                        prediction_prompt_message = {"role": "user", "content": prediction_prompt}
+                        # Keep agent history aligned with the full action->prediction->tool flow.
                         self.agent.messages.append(prediction_prompt_message)
-
-                        # Store prediction with reasoning field (same format as action messages)
-                        # This ensures tokenize_and_mask will handle it correctly during training
-                        pred_message = {"role": "assistant", "content": prediction_text or ""}
-                        if prediction_reasoning:
-                            pred_message["reasoning"] = prediction_reasoning
                         self.agent.messages.append(pred_message)
-                        if cur_step is not None:
-                            # Keep the step snapshot aligned with the live message history.
-                            cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
-                            cur_step.chat_completions.append(copy.deepcopy(pred_message))
+
+                    if cur_step is not None:
+                        # Keep the per-step snapshot aligned with what generated the prediction.
+                        # This is what stepwise RL tokenization uses.
+                        cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
+                        cur_step.chat_completions.append(copy.deepcopy(pred_message))
 
             # 3) Execute in env.
             # For PredictiveToolEnvironment, pass enhanced action so similarity reward can be computed.

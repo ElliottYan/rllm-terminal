@@ -39,14 +39,16 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
 
         actual_tool_outputs = step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS)
         if isinstance(actual_tool_outputs, dict) and actual_tool_outputs:
-            return " ".join(str(v) for v in actual_tool_outputs.values())
+            normalized = {str(k): str(v) for k, v in actual_tool_outputs.items()}
+            return " ".join(normalized[k] for k in sorted(normalized.keys()))
 
         # Backward-compatible fallback: older trajectories may only have step.observation.
         observation = getattr(step, "observation", None)
         if isinstance(observation, dict):
             tool_outputs = observation.get("tool_outputs", {})
             if isinstance(tool_outputs, dict) and tool_outputs:
-                return " ".join(str(v) for v in tool_outputs.values())
+                normalized = {str(k): str(v) for k, v in tool_outputs.items()}
+                return " ".join(normalized[k] for k in sorted(normalized.keys()))
 
         return ""
 
