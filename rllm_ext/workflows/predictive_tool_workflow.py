@@ -227,11 +227,10 @@ class PredictiveToolWorkflow(Workflow):
                 cur_step.reward = float(reward)
                 cur_step.done = bool(done)
                 cur_step.info.update(step_info or {})
-                if prediction_text is not None:
-                    cur_step.info["rllm_ext.prediction_text"] = prediction_text
-                    cur_step.info["rllm_ext.prediction_raw_text"] = prediction_raw_text
-                if prediction_prompt is not None:
-                    cur_step.info["rllm_ext.prediction_prompt"] = prediction_prompt
+
+                # Note: Prediction data is already stored by agent.set_step_prediction()
+                # in step.info["rllm_ext.prediction"] with all metadata.
+                # No need to duplicate here.
 
             # Check for early termination conditions
             if output.finish_reason == "length":

@@ -9,7 +9,7 @@ from rllm.trainer.agent_trainer import AgentTrainer
 from rllm_ext.agents.predictive_tool_agent import PredictiveToolAgent
 from rllm_ext.environments.predictive_tool_env import PredictiveToolEnvironment
 from rllm_ext.workflows.predictive_tool_workflow import PredictiveToolWorkflow
-
+from rllm_ext import PredictiveAgentTrainer
 
 @hydra.main(config_path="pkg://rllm.trainer.config", config_name="agent_ppo_trainer", version_base=None)
 def main(config):
@@ -81,6 +81,9 @@ def main(config):
         },
     }
 
+    use_predictive_trainer = True
+    if use_predictive_trainer is True:
+        AgentTrainer = PredictiveAgentTrainer
     trainer = AgentTrainer(
         workflow_class=PredictiveToolWorkflow,
         workflow_args=workflow_args,
