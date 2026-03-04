@@ -28,6 +28,8 @@ class PredictiveToolAgent(ToolAgent):
 
     # Namespaced keys to avoid collisions with existing code
     INFO_KEY_PREDICTION = "rllm_ext.prediction"
+    INFO_KEY_ACTUAL_OUTPUT = "rllm_ext.actual_output"
+    INFO_KEY_ACTUAL_TOOL_OUTPUTS = "rllm_ext.actual_tool_outputs"
 
     def set_step_prediction(self, *, prediction: PredictionRecord) -> None:
         """

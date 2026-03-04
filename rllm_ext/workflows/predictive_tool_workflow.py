@@ -143,6 +143,25 @@ class PredictiveToolWorkflow(Workflow):
             return None
         return text[start:stop].strip()
 
+    @staticmethod
+    def _extract_actual_tool_outputs(observation: Any) -> tuple[dict[str, str], str]:
+        """
+        Extract post-action tool outputs from environment observation.
+
+        Returns:
+            - tool_outputs map
+            - concatenated output text
+        """
+        if not isinstance(observation, dict):
+            return {}, ""
+
+        tool_outputs = observation.get("tool_outputs")
+        if not isinstance(tool_outputs, dict) or not tool_outputs:
+            return {}, ""
+
+        normalized_outputs = {str(k): str(v) for k, v in tool_outputs.items()}
+        return normalized_outputs, " ".join(normalized_outputs.values())
+
     async def run(self, task: dict, uid: str, **kwargs) -> Episode:
         """
         Execute a multi-step tool workflow, with an extra prediction call per step.
@@ -214,9 +233,17 @@ class PredictiveToolWorkflow(Workflow):
                     # Optionally make prediction part of actual trajectory text (so it can be learned via RL later)
                     if self.prediction_cfg.add_prediction_to_messages:
                         # NOTE: this directly mutates ToolAgent's message history (kept intentionally isolated to rllm_ext).
-                        # Insert prediction messages BEFORE the action response
-                        # Order: action -> prediction -> tool_output
-                        self.agent.messages.append({"role": "user", "content": prediction_prompt})
+                        # Order remains: action -> prediction -> tool_output.
+                        # The action message is already appended by ToolAgent.update_from_model().
+                        cur_step = self.agent.get_current_state()
+                        if action_reasoning:
+                            if self.agent.messages and self.agent.messages[-1].get("role") == "assistant":
+                                self.agent.messages[-1]["reasoning"] = action_reasoning
+                            if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
+                                cur_step.chat_completions[-1]["reasoning"] = action_reasoning
+
+                        prediction_prompt_message = {"role": "user", "content": prediction_prompt}
+                        self.agent.messages.append(prediction_prompt_message)
 
                         # Store prediction with reasoning field (same format as action messages)
                         # This ensures tokenize_and_mask will handle it correctly during training
@@ -224,12 +251,10 @@ class PredictiveToolWorkflow(Workflow):
                         if prediction_reasoning:
                             pred_message["reasoning"] = prediction_reasoning
                         self.agent.messages.append(pred_message)
-
-                        # Now append the action response (tool calls) with reasoning field
-                        action_message = {"role": "assistant", "content": output.content, "tool_calls": raw_action}
-                        if action_reasoning:
-                            action_message["reasoning"] = action_reasoning
-                        self.agent.messages.append(action_message)
+                        if cur_step is not None:
+                            # Keep the step snapshot aligned with the live message history.
+                            cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
+                            cur_step.chat_completions.append(copy.deepcopy(pred_message))
 
             # 3) Execute in env.
             # For PredictiveToolEnvironment, pass enhanced action so similarity reward can be computed.
@@ -246,6 +271,9 @@ class PredictiveToolWorkflow(Workflow):
                 cur_step.reward = float(reward)
                 cur_step.done = bool(done)
                 cur_step.info.update(step_info or {})
+                actual_tool_outputs, actual_output = self._extract_actual_tool_outputs(next_obs)
+                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS] = actual_tool_outputs
+                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT] = actual_output
 
                 # Note: Prediction data is already stored by agent.set_step_prediction()
                 # in step.info["rllm_ext.prediction"] with all metadata.

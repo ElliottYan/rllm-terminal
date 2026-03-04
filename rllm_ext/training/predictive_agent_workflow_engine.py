@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from rllm.engine.agent_workflow_engine import AgentWorkflowEngine
+from rllm_ext.agents.predictive_tool_agent import PredictiveToolAgent
 
 if TYPE_CHECKING:
     from verl import DataProto
@@ -21,6 +22,33 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
     2. Store prediction targets in DataProto non_tensor_batch
     3. Keep all changes isolated in rllm_ext
     """
+
+    @staticmethod
+    def _extract_actual_output(step) -> str:
+        """
+        Extract post-action actual output text for a step.
+
+        Preferred source is step.info populated by PredictiveToolWorkflow after env.step().
+        Falls back to step.observation for backward compatibility with older rollouts.
+        """
+        step_info = step.info if isinstance(step.info, dict) else {}
+
+        actual_output = step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT)
+        if isinstance(actual_output, str) and actual_output:
+            return actual_output
+
+        actual_tool_outputs = step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS)
+        if isinstance(actual_tool_outputs, dict) and actual_tool_outputs:
+            return " ".join(str(v) for v in actual_tool_outputs.values())
+
+        # Backward-compatible fallback: older trajectories may only have step.observation.
+        observation = getattr(step, "observation", None)
+        if isinstance(observation, dict):
+            tool_outputs = observation.get("tool_outputs", {})
+            if isinstance(tool_outputs, dict) and tool_outputs:
+                return " ".join(str(v) for v in tool_outputs.values())
+
+        return ""
 
     def transform_results_for_verl(self, episodes, task_ids: np.ndarray) -> "DataProto":
         """
@@ -59,13 +87,8 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                         pred_reasoning = ""
                         has_prediction = False
 
-                    # Get actual tool output from observation
-                    actual_output = ""
-                    if hasattr(step, "observation") and step.observation:
-                        tool_outputs = step.observation.get("tool_outputs", {})
-                        if tool_outputs:
-                            # Concatenate all tool outputs
-                            actual_output = " ".join(tool_outputs.values())
+                    # Get actual tool output from post-action step.info.
+                    actual_output = self._extract_actual_output(step)
 
                     prediction_targets.append(
                         {
