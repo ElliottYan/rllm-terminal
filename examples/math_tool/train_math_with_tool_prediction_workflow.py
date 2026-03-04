@@ -2,6 +2,7 @@ import hydra
 import os
 
 from hydra.utils import get_original_cwd
+from omegaconf import OmegaConf
 from rllm.data.dataset import DatasetRegistry
 from rllm.rewards.reward_fn import math_reward_fn
 from rllm.trainer.agent_trainer import AgentTrainer
@@ -50,6 +51,29 @@ def main(config):
     # Read feature flags from config (with defaults)
     enable_prediction = config.get("enable_prediction", False)
     enable_similarity_reward = config.get("enable_similarity_reward", False)
+    # prediction_cfg can be set either at:
+    # 1) top-level `prediction_cfg` (recommended for this example script)
+    # 2) `rllm.workflow.workflow_args.prediction_cfg`
+    prediction_cfg_from_config = {}
+    if config.get("prediction_cfg") is not None:
+        prediction_cfg_from_config = OmegaConf.to_container(config.get("prediction_cfg"), resolve=True)
+    elif (
+        config.get("rllm") is not None
+        and config.rllm.get("workflow") is not None
+        and config.rllm.workflow.get("workflow_args") is not None
+        and config.rllm.workflow.workflow_args.get("prediction_cfg") is not None
+    ):
+        prediction_cfg_from_config = OmegaConf.to_container(
+            config.rllm.workflow.workflow_args.get("prediction_cfg"),
+            resolve=True,
+        )
+
+    default_prediction_cfg = {
+        "enabled": enable_prediction,
+        "max_tokens": 256,
+        "add_prediction_to_messages": True,
+    }
+    prediction_cfg = {**default_prediction_cfg, **prediction_cfg_from_config}
 
     agent_args = {
         "tools": ["python"],
@@ -78,11 +102,7 @@ def main(config):
         "agent_args": agent_args,
         "env_args": env_args,
         "max_steps": 10,
-        "prediction_cfg": {
-            "enabled": enable_prediction,  # Controlled by config.enable_prediction
-            "max_tokens": 256,
-            "add_prediction_to_messages": True,
-        },
+        "prediction_cfg": prediction_cfg,
     }
 
     use_predictive_trainer = True
@@ -100,4 +120,3 @@ def main(config):
 
 if __name__ == "__main__":
     main()
-
