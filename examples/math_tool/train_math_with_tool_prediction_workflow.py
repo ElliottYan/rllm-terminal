@@ -20,6 +20,14 @@ def main(config):
 
     This keeps core `rllm` untouched by implementing everything in `rllm_ext`.
     """
+    # Print current hydra config for reproducibility/debugging.
+    try:
+        print("Current config (resolved):")
+        print(OmegaConf.to_yaml(config, resolve=True))
+    except Exception:
+        print("Current config (unresolved):")
+        print(OmegaConf.to_yaml(config, resolve=False))
+
     # Set TENSORBOARD_DIR environment variable before training starts
     # Priority: 1) Existing TENSORBOARD_DIR env var
     #            2) config.trainer.tensorboard_dir if it exists and is not None
@@ -51,6 +59,17 @@ def main(config):
     # Read feature flags from config (with defaults)
     enable_prediction = config.get("enable_prediction", False)
     enable_similarity_reward = config.get("enable_similarity_reward", False)
+    # max_steps can be set either at:
+    # 1) top-level `max_steps` (recommended for this example script)
+    # 2) `rllm.workflow.workflow_args.max_steps`
+    max_steps = config.get("max_steps", None)
+    if max_steps is None and config.get("rllm") is not None and config.rllm.get("workflow") is not None:
+        workflow_args_cfg = config.rllm.workflow.get("workflow_args")
+        if workflow_args_cfg is not None:
+            max_steps = workflow_args_cfg.get("max_steps")
+    if max_steps is None:
+        max_steps = 10
+
     # prediction_cfg can be set either at:
     # 1) top-level `prediction_cfg` (recommended for this example script)
     # 2) `rllm.workflow.workflow_args.prediction_cfg`
@@ -101,7 +120,7 @@ def main(config):
         "env_cls": PredictiveToolEnvironment,
         "agent_args": agent_args,
         "env_args": env_args,
-        "max_steps": 10,
+        "max_steps": int(max_steps),
         "prediction_cfg": prediction_cfg,
     }
 
