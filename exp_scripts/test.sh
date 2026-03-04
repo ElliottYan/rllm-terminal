@@ -25,8 +25,11 @@ mkdir -p $TENSORBOARD_DIR
 NNODE=1
 NGPUS=2
 
-TRAIN_BATCH_SIZE=32
 
+# TRAIN_BATCH_SIZE=32
+# TRAIN_MINI_SIZE=32
+TRAIN_BATCH_SIZE=4
+TRAIN_MINI_SIZE=32
 
 # if [ $rank -eq 0 ]; then
 # python3 /workdir/rllm-terminal/examples/math_tool/train_math_with_tool.py \
@@ -34,7 +37,7 @@ python3 $LOCAL_PWD/examples/math_tool/train_math_with_tool_prediction_workflow.p
     algorithm.adv_estimator=grpo \
     actor_rollout_ref.actor.policy_loss.loss_mode=gpg \
     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
-    data.train_batch_size=32 \
+    data.train_batch_size=$TRAIN_BATCH_SIZE \
     data.val_batch_size=500 \
     data.max_prompt_length=2048 \
     data.max_response_length=8192 \
@@ -42,12 +45,11 @@ python3 $LOCAL_PWD/examples/math_tool/train_math_with_tool_prediction_workflow.p
     actor_rollout_ref.hybrid_engine=True \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=32 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=$TRAIN_MINI_SIZE \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=30720 \
     actor_rollout_ref.actor.use_kl_loss=False \
-    actor_rollout_ref.actor.clip_ratio_low=0.0003 \
-    actor_rollout_ref.actor.clip_ratio_high=0.0004 \
+    actor_rollout_ref.actor.clip_ratio_high=0.28 \
     actor_rollout_ref.actor.kl_loss_coef=0.001 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=1 \
