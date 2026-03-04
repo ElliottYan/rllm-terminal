@@ -22,7 +22,6 @@ export PYTHONPATH=./rllm-terminal:$PYTHONPATHie
 export TENSORBOARD_DIR=$LOCAL_PWD/tensorboard/$EXP
 mkdir -p $TENSORBOARD_DIR
 
-
 NNODE=1
 NGPUS=2
 

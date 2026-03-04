@@ -18,8 +18,9 @@ export VLLM_ENGINE_ITERATION_TIMEOUT_S=100000000000
 pip3 install hope==3.6.8 -i http://pypi.sankuai.com/simple/ --trusted-host pypi.sankuai.com --upgrade
 # 
 # MODEL_PATH=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/yinyongjing/hfmodels/DeepSeek-R1-Distill-Qwen-1.5B
-MODEL_PATH=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/liuxinyu67/models/Qwen3-8B
+# MODEL_PATH=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03/huggingface.co/Qwen/Qwen3-4B-Instruct-2507
+MODEL_PATH=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03//Qwen3-8B
 
 # LOCAL_PWD=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/yinyongjing
-LOCAL_PWD=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/yanjianhao/rllm-terminal
+LOCAL_PWD=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03/rllm-terminal/
 
