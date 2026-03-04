@@ -47,20 +47,24 @@ def main(config):
     # Enable workflow training path
     config.rllm.workflow.use_workflow = True
 
+    # Read feature flags from config (with defaults)
+    enable_prediction = config.get("enable_prediction", False)
+    enable_similarity_reward = config.get("enable_similarity_reward", False)
+
     agent_args = {
         "tools": ["python"],
         "parser_name": "qwen",
         "system_prompt": (
             "You are a math assistant that can write python to solve math problems.\n"
             "You will use tools when helpful.\n"
-            "Before executing a tool action, you will also be asked to predict what the tool will output."
+            + ("Before executing a tool action, you will also be asked to predict what the tool will output." if enable_prediction else "")
         ),
     }
     env_args = {
         "tools": ["python"],
         "reward_fn": math_reward_fn,
         "similarity_config": {
-            "enabled": True,
+            "enabled": enable_similarity_reward,  # Controlled by config.enable_similarity_reward
             "weight": 0.1,        # Max 0.1 reward per step for accurate predictions
             "n": 4,               # BLEU-4 style n-gram similarity
             "min_length": 4,      # Skip outputs shorter than 4 words
@@ -75,7 +79,7 @@ def main(config):
         "env_args": env_args,
         "max_steps": 10,
         "prediction_cfg": {
-            "enabled": False,  # Disabled to avoid vLLM OOM (doubles vLLM calls when enabled)
+            "enabled": enable_prediction,  # Controlled by config.enable_prediction
             "max_tokens": 256,
             "add_prediction_to_messages": True,
         },
