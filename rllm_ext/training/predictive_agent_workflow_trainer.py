@@ -54,8 +54,9 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         self._replace_workflow_engine()
 
         # Step 4: Replace actor with our extended version
-        if self.config.actor.get("prediction_loss_weight", 0) > 0:
-            self._inject_predictive_actor()
+        if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
+            if self.config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0:
+                self._inject_predictive_actor()
 
     def _configure_prediction_loss(self):
         """
@@ -79,12 +80,12 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
             if key not in pred_config:
                 pred_config[key] = value
 
-        # Add to actor config
+        # Add to actor config (actor is under actor_rollout_ref)
         # This will be read when DataParallelPPOActor is created
-        if hasattr(self.config, "actor"):
-            self.config.actor.prediction_loss_weight = pred_config["weight"] if pred_config["enabled"] else 0
-            self.config.actor.prediction_loss_type = pred_config["loss_type"]
-            self.config.actor.prediction_temperature = pred_config["temperature"]
+        if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
+            self.config.actor_rollout_ref.actor.prediction_loss_weight = pred_config["weight"] if pred_config["enabled"] else 0
+            self.config.actor_rollout_ref.actor.prediction_loss_type = pred_config["loss_type"]
+            self.config.actor_rollout_ref.actor.prediction_temperature = pred_config["temperature"]
 
     def _replace_workflow_engine(self):
         """
@@ -131,7 +132,8 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         This is called after parent's init_workers to swap in our custom actor.
         """
         # Only inject if prediction loss is enabled
-        if self.config.actor.get("prediction_loss_weight", 0) > 0:
+        actor_config = self.config.actor_rollout_ref.actor
+        if actor_config.get("prediction_loss_weight", 0) > 0:
             from rllm_ext.training.predictive_actor import PredictiveActor
 
             # Get the current actor module and optimizer
@@ -140,7 +142,7 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
 
             # Create PredictiveActor with same module and optimizer
             predictive_actor = PredictiveActor(
-                config=self.config.actor,
+                config=actor_config,
                 actor_module=actor_module,
                 actor_optimizer=actor_optimizer,
             )
