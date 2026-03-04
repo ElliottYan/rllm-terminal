@@ -105,7 +105,7 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
         from verl import DataProto
 
         return DataProto.from_dict(
-            tensors=batch.batch,
+            tensors=batch.batch if batch.batch is not None else None,
             non_tensors=non_tensors,
             meta_info=batch.meta_info,
         )
