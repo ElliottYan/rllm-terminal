@@ -122,9 +122,7 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
             self.agent_execution_engine.shutdown()
 
         self.agent_execution_engine = predictive_engine
-
-        if self.actor_rollout_wg.rank == 0:
-            print("PredictiveAgentWorkflowEngine injected successfully")
+        print("PredictiveAgentWorkflowEngine injected successfully")
 
     def _inject_predictive_actor(self):
         """
@@ -149,6 +147,4 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
 
             # Replace the actor in the worker group
             self.actor_rollout_wg.actor = predictive_actor
-
-            if self.actor_rollout_wg.rank == 0:
-                print("PredictiveActor injected successfully")
+            print("PredictiveActor injected successfully")
