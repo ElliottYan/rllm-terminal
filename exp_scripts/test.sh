@@ -25,11 +25,14 @@ mkdir -p $TENSORBOARD_DIR
 NNODE=1
 NGPUS=2
 
+TRAIN_BATCH_SIZE=32
+
+
 # if [ $rank -eq 0 ]; then
 # python3 /workdir/rllm-terminal/examples/math_tool/train_math_with_tool.py \
 python3 $LOCAL_PWD/examples/math_tool/train_math_with_tool_prediction_workflow.py \
     algorithm.adv_estimator=grpo \
-    actor_rollout_ref.actor.policy_loss.loss_mode=gspo \
+    actor_rollout_ref.actor.policy_loss.loss_mode=gpg \
     actor_rollout_ref.actor.loss_agg_mode=seq-mean-token-mean \
     data.train_batch_size=32 \
     data.val_batch_size=500 \

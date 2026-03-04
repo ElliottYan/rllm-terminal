@@ -108,12 +108,16 @@ class PredictiveAgentTrainer:
 
 
 @ray.remote(num_cpus=1)
-class PredictiveTaskRunner(TaskRunner):
+class PredictiveTaskRunner:
     """
     Extended TaskRunner that uses PredictiveAgentWorkflowTrainer.
 
-    This overrides the run() method to use our custom trainer when
-    workflow mode is enabled.
+    This is a copy of rllm.trainer.verl.train_agent_ppo.TaskRunner
+    with the only modification being the use of PredictiveAgentWorkflowTrainer
+    instead of AgentWorkflowPPOTrainer.
+
+    Note: We cannot inherit from TaskRunner because it's already a @ray.remote actor.
+    Instead, we copy the run() method here.
     """
 
     def run(self, config, workflow_class=None, workflow_args=None, agent_class=None, env_class=None, agent_args=None, env_args=None):
