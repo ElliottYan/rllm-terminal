@@ -146,6 +146,10 @@ class PredictiveTaskRunner:
             assert config.critic.strategy in {"fsdp", "fsdp2"}
             from verl.single_controller.ray import RayWorkerGroup
             from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
+            from rllm_ext.training.predictive_fsdp_workers import (
+                AsyncPredictiveActorRolloutRefWorker,
+                PredictiveActorRolloutRefWorker,
+            )
 
             use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
             if use_legacy_worker_impl in ["auto", "enable"]:
@@ -155,7 +159,19 @@ class PredictiveTaskRunner:
             else:
                 raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
 
-            actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else ActorRolloutRefWorker
+            prediction_loss_enabled = config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0
+            if prediction_loss_enabled:
+                actor_rollout_cls = (
+                    AsyncPredictiveActorRolloutRefWorker
+                    if config.actor_rollout_ref.rollout.mode == "async"
+                    else PredictiveActorRolloutRefWorker
+                )
+            else:
+                actor_rollout_cls = (
+                    AsyncActorRolloutRefWorker
+                    if config.actor_rollout_ref.rollout.mode == "async"
+                    else ActorRolloutRefWorker
+                )
             ray_worker_group_cls = RayWorkerGroup
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":

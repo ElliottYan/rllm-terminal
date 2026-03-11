@@ -56,7 +56,10 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         # Step 4: Replace actor with our extended version
         if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
             if self.config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0:
-                self._inject_predictive_actor()
+                if hasattr(self.actor_rollout_wg, "execute_all_sync"):
+                    print("PredictiveActor injected via remote worker init_model")
+                else:
+                    self._inject_predictive_actor()
 
     # def _configure_prediction_loss(self):
     #     """
