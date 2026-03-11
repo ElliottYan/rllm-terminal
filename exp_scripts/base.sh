@@ -42,7 +42,7 @@ launch="$(python3 "${RAY_LAUNCH_SCRIPT}")"
 eval "${launch}"
 
 export HYDRA_FULL_ERROR=1
-export PYTHONPATH="./rllm-terminal:${PYTHONPATH:-}"
+export PYTHONPATH="${LOCAL_PWD}:${PYTHONPATH:-}"
 export TENSORBOARD_DIR="${TENSORBOARD_DIR:-${LOCAL_PWD}/tensorboard/${EXP}}"
 mkdir -p "${TENSORBOARD_DIR}"
 

@@ -1,0 +1,8 @@
+# run_id	enable_prediction	enable_similarity_reward	add_prediction_to_messages	simple_tir	prediction_max_tokens	prediction_loss_weight	total_epochs	max_steps	extra_overrides
+b00_baseline	false	false	true	false	256	0.0	100	2	-
+p10_pred_only	true	false	true	false	256	0.0	100	2	-
+p11_pred_sim	true	true	true	false	256	0.0	100	2	-
+p12_pred_sim_simple_tir	true	true	true	true	256	0.0	100	2	-
+p13_pred_sim_no_hist	true	true	false	false	256	0.0	100	2	-
+p14_pred_sim_tok128	true	true	true	false	128	0.0	100	2	-
+p15_pred_sim_tok512	true	true	true	false	512	0.0	100	2	-

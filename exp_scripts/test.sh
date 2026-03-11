@@ -18,7 +18,7 @@ eval "${launch}"
 
 export HYDRA_FULL_ERROR=1
 
-export PYTHONPATH=./rllm-terminal:$PYTHONPATHie
+export PYTHONPATH=${LOCAL_PWD}:${PYTHONPATH:-}
 export TENSORBOARD_DIR=$LOCAL_PWD/tensorboard/$EXP
 mkdir -p $TENSORBOARD_DIR
 
