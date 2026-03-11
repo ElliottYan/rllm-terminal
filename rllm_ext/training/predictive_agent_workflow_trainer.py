@@ -146,6 +146,8 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
                 actor_module=actor_module,
                 actor_optimizer=actor_optimizer,
             )
+            if hasattr(self, "tokenizer"):
+                predictive_actor.tokenizer = self.tokenizer
 
             # Replace the actor in the worker group
             self.actor_rollout_wg.actor = predictive_actor
