@@ -1,4 +1,4 @@
-git aimport hydra
+import hydra
 import os
 
 from hydra.utils import get_original_cwd
