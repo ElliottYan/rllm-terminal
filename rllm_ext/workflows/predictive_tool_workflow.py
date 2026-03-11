@@ -25,7 +25,8 @@ class PredictionConfig:
     """
 
     enabled: bool = True
-    collect_loss_targets: bool = False
+    enable_prediction_loss: bool = False
+    enable_prediction_step: bool = False
     max_tokens: int = 256
     # If True, prediction prompt/answer are kept in live message history for future turns.
     # The per-step training snapshot always includes prediction so RL reward is attached
@@ -304,8 +305,8 @@ class PredictiveToolWorkflow(Workflow):
             prediction_raw_text = None
             prediction_prompt = None
             prediction_payload = None
-            prediction_step_enabled = bool(self.prediction_cfg.enabled)
-            prediction_loss_enabled = bool(getattr(self.prediction_cfg, "collect_loss_targets", False))
+            prediction_step_enabled = bool(getattr(self.prediction_cfg, "enable_prediction_step", False))
+            prediction_loss_enabled = bool(getattr(self.prediction_cfg, "enable_prediction_loss", False))
             if prediction_step_enabled or prediction_loss_enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
                 # the tool call is not a finish tool.
@@ -333,10 +334,11 @@ class PredictiveToolWorkflow(Workflow):
                         if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
                             cur_step.chat_completions[-1]["reasoning"] = action_reasoning
 
-                    if prediction_step_enabled:
-                        pred_messages = self.agent.chat_completions.copy()
-                        pred_messages.append({"role": "user", "content": prediction_prompt})
+                    # no matter what, add prediction prompt
+                    pred_messages = self.agent.chat_completions.copy()
+                    pred_messages.append({"role": "user", "content": prediction_prompt})
 
+                    if prediction_step_enabled:
                         pred_output: ModelOutput = await self.rollout_engine.get_model_response(
                             pred_messages,
                             application_id=f"{uid}:pred:{step_idx}",

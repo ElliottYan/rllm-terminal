@@ -8,5 +8,6 @@ ENABLE_SIMILARITY_REWARD=false \
 PREDICTION_LOSS_WEIGHT=1.0 \
 PREDICTION_LOSS_TYPE=cross_entropy \
 PREDICTION_TEMPERATURE=1.0 \
+EXP=test_pred_loss \
 bash exp_scripts/base.sh
 # SKIP_INSTALL=1 \

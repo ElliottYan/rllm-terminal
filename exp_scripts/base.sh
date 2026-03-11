@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -xeuo pipefail
+#set -xeuo pipefail
+set -x
+ray stop
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/auto_env.sh"
@@ -25,7 +27,8 @@ PREDICTION_LOSS_TYPE="${PREDICTION_LOSS_TYPE:-cross_entropy}"
 PREDICTION_TEMPERATURE="${PREDICTION_TEMPERATURE:-1.0}"
 
 PROJECT_NAME="${PROJECT_NAME:-rllm-agent}"
-RAY_LAUNCH_SCRIPT="${RAY_LAUNCH_SCRIPT:-/workdir/rllm-terminal/examples/math_tool/ray_launch.py}"
+# RAY_LAUNCH_SCRIPT="${RAY_LAUNCH_SCRIPT:-/$LOCAL_DIR/rllm-terminal/examples/math_tool/ray_launch.py}"
+RAY_LAUNCH_SCRIPT=$LOCAL_DIR/rllm-terminal/examples/math_tool/ray_launch.py
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-${LOCAL_PWD}/examples/math_tool/train_math_with_tool_prediction_workflow.py}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 
@@ -45,6 +48,8 @@ export HYDRA_FULL_ERROR=1
 export PYTHONPATH="${LOCAL_PWD}:${PYTHONPATH:-}"
 export TENSORBOARD_DIR="${TENSORBOARD_DIR:-${LOCAL_PWD}/tensorboard/${EXP}}"
 mkdir -p "${TENSORBOARD_DIR}"
+
+export RAY_DEBUG=legacy
 
 CMD=(
     python3 "${TRAIN_SCRIPT}"
