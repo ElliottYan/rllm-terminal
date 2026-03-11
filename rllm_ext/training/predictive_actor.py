@@ -377,6 +377,7 @@ class PredictiveActor(DataParallelPPOActor):
             return None
 
         pad_token_id = tokenizer.pad_token_id
+        eos_token_id = getattr(tokenizer, "eos_token_id", None)
         if pad_token_id is None:
             pad_token_id = eos_token_id if eos_token_id is not None else 0
 
