@@ -8,6 +8,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from rllm.parser.chat_template_parser import ChatTemplateParser
 
 # Import base actor from verl
 from verl import DataProto
@@ -26,10 +27,11 @@ class PredictiveActor(DataParallelPPOActor):
 
     This actor extends the base DataParallelPPOActor to:
     1. Extract prediction targets from batch non_tensor_batch
-    2. Compute prediction loss (cross-entropy between prediction and actual output)
+    2. Compute prediction loss from prediction-step chat context to actual output
     3. Add prediction loss to PPO policy loss
 
-    The prediction loss encourages the model to predict tool outputs accurately.
+    The prediction loss encourages the model to predict tool outputs accurately
+    from the same context used by the prediction sub-step.
     """
 
     def __init__(self, config, actor_module: nn.Module, actor_optimizer: torch.optim.Optimizer = None):
@@ -227,100 +229,189 @@ class PredictiveActor(DataParallelPPOActor):
         Returns:
             Scalar prediction loss tensor or None if no valid predictions
         """
-        device = response_mask.device
+        prediction_examples = []
 
-        # Filter steps that have predictions
-        valid_indices = []
-        pred_texts = []
-        actual_texts = []
+        for pred_target in prediction_targets:
+            if not isinstance(pred_target, dict):
+                continue
 
-        for i, pred_target in enumerate(prediction_targets):
-            if pred_target.get("has_prediction", False):
-                pred_text = pred_target.get("prediction", "").strip()
-                actual_text = pred_target.get("actual", "").strip()
-                if pred_text and actual_text:
-                    valid_indices.append(i)
-                    pred_texts.append(pred_text)
-                    actual_texts.append(actual_text)
+            examples = pred_target.get("examples", [])
+            if not isinstance(examples, list):
+                continue
 
-        if not valid_indices:
+            for example in examples:
+                if not isinstance(example, dict):
+                    continue
+
+                prompt_messages = example.get("prompt_messages")
+                target_text = example.get("target_text", "")
+
+                if not isinstance(prompt_messages, list):
+                    continue
+
+                target_text = str(target_text).strip()
+                if not target_text:
+                    continue
+
+                prediction_examples.append(
+                    {
+                        "prompt_messages": prompt_messages,
+                        "target_text": target_text,
+                    }
+                )
+
+        if not prediction_examples:
             return None
 
-        # For now, return a placeholder loss
-        # TODO: Implement actual loss computation using tokenizer
-        #
-        # The full implementation would:
-        # 1. Tokenize pred_texts and actual_texts
-        # 2. Get model logits for pred_texts
-        # 3. Compute cross-entropy against actual_texts
-        # 4. Aggregate over valid samples
-        #
-        # For placeholder purposes, return a small loss that requires grad
+        if self.prediction_loss_type != "cross_entropy":
+            if not getattr(self, "_warned_unsupported_prediction_loss", False):
+                logger.warning(
+                    "Unsupported prediction_loss_type=%s, skip prediction loss (supported: cross_entropy).",
+                    self.prediction_loss_type,
+                )
+                self._warned_unsupported_prediction_loss = True
+            return None
 
-        # Placeholder: return zero loss with grad
-        return torch.tensor(0.0, device=device, requires_grad=True)
+        tokenizer = self._resolve_prediction_tokenizer()
+        if tokenizer is None:
+            if not getattr(self, "_warned_missing_prediction_tokenizer", False):
+                logger.warning(
+                    "Prediction loss skipped because tokenizer is unavailable on PredictiveActor/actor_module."
+                )
+                self._warned_missing_prediction_tokenizer = True
+            return None
+
+        return self._compute_cross_entropy_prediction_loss(prediction_examples=prediction_examples, tokenizer=tokenizer)
+
+    def _resolve_prediction_tokenizer(self) -> Any | None:
+        """Resolve tokenizer from actor first, then actor module wrappers."""
+        tokenizer = getattr(self, "tokenizer", None)
+        if tokenizer is not None:
+            return tokenizer
+
+        actor_module = getattr(self, "actor_module", None)
+        if actor_module is None:
+            return None
+
+        tokenizer = getattr(actor_module, "tokenizer", None)
+        if tokenizer is not None:
+            return tokenizer
+
+        wrapped = getattr(actor_module, "module", None)
+        if wrapped is None:
+            return None
+        return getattr(wrapped, "tokenizer", None)
+
+    def _resolve_prediction_chat_parser(self, tokenizer) -> ChatTemplateParser:
+        parser = getattr(self, "_prediction_chat_parser", None)
+        if parser is not None and getattr(parser, "tokenizer", None) is tokenizer:
+            return parser
+
+        try:
+            parser = ChatTemplateParser.get_parser(tokenizer)
+        except Exception:
+            parser = ChatTemplateParser(tokenizer)
+
+        self._prediction_chat_parser = parser
+        return parser
 
     def _compute_cross_entropy_prediction_loss(
         self,
-        prediction_texts: list[str],
-        actual_texts: list[str],
+        prediction_examples: list[dict[str, Any]],
         tokenizer,
-    ) -> torch.Tensor:
+    ) -> torch.Tensor | None:
         """
-        Compute cross-entropy loss between predictions and actual outputs.
-
-        Tokenizes both texts and computes cross-entropy loss.
+        Compute CE loss for predicting actual output from prediction-step chat context.
 
         Args:
-            prediction_texts: List of predicted texts
-            actual_texts: List of actual (ground truth) texts
+            prediction_examples: List of prompt messages and assistant targets
             tokenizer: Tokenizer to use
 
         Returns:
-            Scalar cross-entropy loss
+            Scalar cross-entropy loss or None when no valid tokenized pairs
         """
-        # Tokenize predictions (as input to model)
-        pred_tokens = tokenizer(
-            prediction_texts,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        )
+        max_total_len = int(self.config.get("prediction_loss_max_length", 512))
+        max_total_len = max(max_total_len, 8)
+        chat_parser = self._resolve_prediction_chat_parser(tokenizer)
 
-        # Tokenize actual outputs (as targets)
-        actual_tokens = tokenizer(
-            actual_texts,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
-        )
+        input_id_lists: list[list[int]] = []
+        label_id_lists: list[list[int]] = []
 
-        # Move to device
+        for example in prediction_examples:
+            prompt_messages = example.get("prompt_messages")
+            target_text = example.get("target_text", "")
+            if not isinstance(prompt_messages, list):
+                continue
+
+            target_message = {"role": "assistant", "content": target_text}
+
+            try:
+                prompt_ids, response_ids, _ = chat_parser.tokenize_and_mask(prompt_messages + [target_message])
+            except Exception:
+                continue
+
+            prompt_ids = prompt_ids.tolist()
+            response_ids = response_ids.tolist()
+
+            if not response_ids:
+                continue
+
+            if len(response_ids) >= max_total_len:
+                prompt_ids = []
+                response_ids = response_ids[:max_total_len]
+            else:
+                max_prompt_len = max_total_len - len(response_ids)
+                if len(prompt_ids) > max_prompt_len:
+                    prompt_ids = prompt_ids[-max_prompt_len:]
+
+            input_ids = prompt_ids + response_ids
+            label_ids = [-100] * len(prompt_ids) + response_ids
+
+            if not input_ids or not any(label != -100 for label in label_ids):
+                continue
+
+            input_id_lists.append(input_ids)
+            label_id_lists.append(label_ids)
+
+        if not input_id_lists:
+            return None
+
+        pad_token_id = tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = eos_token_id if eos_token_id is not None else 0
+
+        max_seq_len = max(len(ids) for ids in input_id_lists)
+        padded_inputs = []
+        padded_labels = []
+        padded_attn_mask = []
+        for input_ids, label_ids in zip(input_id_lists, label_id_lists):
+            pad_len = max_seq_len - len(input_ids)
+            padded_inputs.append(input_ids + [pad_token_id] * pad_len)
+            padded_labels.append(label_ids + [-100] * pad_len)
+            padded_attn_mask.append([1] * len(input_ids) + [0] * pad_len)
+
         device = next(self.actor_module.parameters()).device
-        pred_input_ids = pred_tokens["input_ids"].to(device)
-        pred_attention_mask = pred_tokens["attention_mask"].to(device)
-        actual_input_ids = actual_tokens["input_ids"].to(device)
+        input_ids = torch.tensor(padded_inputs, dtype=torch.long, device=device)
+        attention_mask = torch.tensor(padded_attn_mask, dtype=torch.long, device=device)
+        labels = torch.tensor(padded_labels, dtype=torch.long, device=device)
 
-        # Forward pass on prediction text
-        with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
             outputs = self.actor_module(
-                input_ids=pred_input_ids,
-                attention_mask=pred_attention_mask,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
                 use_cache=False,
             )
-            logits = outputs.logits  # (batch, seq_len, vocab_size)
+            logits = outputs.logits
+            if self.prediction_temperature != 1.0:
+                logits = logits / self.prediction_temperature
 
-        # Compute cross-entropy loss
-        # Shift logits and labels for next-token prediction
         shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = actual_input_ids[..., 1:].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
 
         loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            ignore_index=tokenizer.pad_token_id,
+            shift_logits.reshape(-1, shift_logits.size(-1)),
+            shift_labels.reshape(-1),
+            ignore_index=-100,
             reduction="mean",
         )
 

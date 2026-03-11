@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -52,15 +53,58 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
 
         return ""
 
+    @staticmethod
+    def _build_prediction_loss_example(step) -> dict | None:
+        """
+        Build one supervised prediction example from a rollout step.
+
+        The prediction loss is trained on the same context as the prediction sub-step:
+        prompt/history + assistant action + user prediction prompt -> assistant actual output.
+        """
+        step_info = step.info if isinstance(step.info, dict) else {}
+        prediction_record = step_info.get(PredictiveToolAgent.INFO_KEY_PREDICTION)
+        if not isinstance(prediction_record, dict):
+            return None
+
+        prediction_prompt = prediction_record.get("prompt")
+        if not isinstance(prediction_prompt, str) or not prediction_prompt.strip():
+            return None
+
+        actual_output = PredictiveAgentWorkflowEngine._extract_actual_output(step).strip()
+        if not actual_output:
+            return None
+
+        prompt_messages = copy.deepcopy(step.chat_completions) if isinstance(step.chat_completions, list) else []
+
+        if prompt_messages and isinstance(prompt_messages[-1], dict) and prompt_messages[-1].get("role") == "assistant":
+            prompt_messages = prompt_messages[:-1]
+
+        if (
+            not prompt_messages
+            or not isinstance(prompt_messages[-1], dict)
+            or prompt_messages[-1].get("role") != "user"
+            or prompt_messages[-1].get("content") != prediction_prompt
+        ):
+            prompt_messages.append({"role": "user", "content": prediction_prompt})
+
+        return {
+            "prompt_messages": prompt_messages,
+            "target_text": f"<prediction>{actual_output}</prediction>",
+            "actual": actual_output,
+            "prediction_prompt": prediction_prompt,
+        }
+
     def transform_results_for_verl(self, episodes, task_ids: np.ndarray) -> "DataProto":
         """
         Transform episode results into Verl-compatible DataProto with prediction data.
 
         Extends the base implementation to add prediction_targets field.
         """
-        # First, collect prediction targets in sync with step generation
-        # We need to mirror the logic in parent class to maintain correct ordering
+        # First, collect prediction targets in sync with parent batch row construction.
+        # When stepwise advantage is disabled, parent creates one row per trajectory;
+        # otherwise it creates one row per step.
         prediction_targets = []
+        stepwise_enabled = bool(self.config.rllm.stepwise_advantage.enable)
 
         for i, episode in enumerate(episodes):
             if episode is None:
@@ -72,55 +116,41 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                 continue
 
             for trajectory in episode.trajectories:
-                for step_idx, step in enumerate(trajectory.steps):
-                    # Extract prediction metadata from step.info
-                    # Prediction is stored in step.info["rllm_ext.prediction"] by PredictiveToolAgent
-                    prediction_record = step.info.get("rllm_ext.prediction")
+                if len(trajectory.steps) == 0:
+                    continue
 
-                    # Get prediction text and metadata
-                    if prediction_record:
-                        pred_text = prediction_record.get("prediction")
-                        pred_raw = prediction_record.get("metadata", {}).get("raw_text")
-                        pred_reasoning = prediction_record.get("metadata", {}).get("reasoning", "")
-                        has_prediction = pred_text is not None
-                    else:
-                        pred_text = None
-                        pred_raw = None
-                        pred_reasoning = ""
-                        has_prediction = False
-
-                    # Get actual tool output from post-action step.info.
-                    actual_output = self._extract_actual_output(step)
+                if stepwise_enabled:
+                    for step in trajectory.steps:
+                        example = self._build_prediction_loss_example(step)
+                        prediction_targets.append(
+                            {
+                                "examples": [example] if example is not None else [],
+                                "has_prediction_target": example is not None,
+                            }
+                        )
+                else:
+                    trajectory_examples = []
+                    for step in trajectory.steps:
+                        example = self._build_prediction_loss_example(step)
+                        if example is not None:
+                            trajectory_examples.append(example)
 
                     prediction_targets.append(
                         {
-                            "prediction": pred_text or "",
-                            "actual": actual_output,
-                            "prediction_raw_text": pred_raw or "",
-                            "prediction_reasoning": pred_reasoning,
-                            "has_prediction": has_prediction,
+                            "examples": trajectory_examples,
+                            "has_prediction_target": bool(trajectory_examples),
                         }
                     )
 
         # Call parent implementation to get the base batch
         batch = super().transform_results_for_verl(episodes, task_ids)
 
-        # Ensure prediction_targets matches batch size
-        # The parent class creates one entry per step across all trajectories
         expected_size = len(batch.non_tensor_batch["step_ids"])
 
-        while len(prediction_targets) < expected_size:
-            prediction_targets.append(
-                {
-                    "prediction": "",
-                    "actual": "",
-                    "prediction_raw_text": "",
-                    "prediction_reasoning": "",
-                    "has_prediction": False,
-                }
+        if len(prediction_targets) != expected_size:
+            raise RuntimeError(
+                f"prediction_targets misaligned with verl batch: got {len(prediction_targets)} entries, expected {expected_size}"
             )
-
-        prediction_targets = prediction_targets[:expected_size]
 
         # Add prediction_targets directly to non_tensor_batch in-place
         # This avoids creating a new DataProto and holding TensorDict references
