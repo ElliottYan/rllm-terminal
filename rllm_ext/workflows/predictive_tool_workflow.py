@@ -25,6 +25,7 @@ class PredictionConfig:
     """
 
     enabled: bool = True
+    collect_loss_targets: bool = False
     max_tokens: int = 256
     # If True, prediction prompt/answer are kept in live message history for future turns.
     # The per-step training snapshot always includes prediction so RL reward is attached
@@ -303,56 +304,28 @@ class PredictiveToolWorkflow(Workflow):
             prediction_raw_text = None
             prediction_prompt = None
             prediction_payload = None
-            if self.prediction_cfg.enabled:
+            prediction_step_enabled = bool(self.prediction_cfg.enabled)
+            prediction_loss_enabled = bool(getattr(self.prediction_cfg, "collect_loss_targets", False))
+            if prediction_step_enabled or prediction_loss_enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
                 # the tool call is not a finish tool.
                 if prediction_prompt is not None:
-                    pred_messages = self.agent.chat_completions.copy()
-                    pred_messages.append({"role": "user", "content": prediction_prompt})
-
-                    pred_output: ModelOutput = await self.rollout_engine.get_model_response(
-                        pred_messages,
-                        application_id=f"{uid}:pred:{step_idx}",
-                        max_tokens=self.prediction_cfg.max_tokens,
-                        **kwargs,
-                    )
-
-                    # Parse prediction: extract reasoning (before <prediction>) and content (inside <prediction>)
-                    # This mirrors the parse_completion logic for tool calls which uses  as separator
-                    prediction_raw_text = pred_output.text or ""
-
-                    if "<prediction>" in prediction_raw_text:
-                        # Split on first <prediction> tag (mirrors partition(")") logic)
-                        reasoning_part, _, prediction_part = prediction_raw_text.partition("<prediction>")
-                        prediction_reasoning = reasoning_part.strip()
-
-                        # Extract content between <prediction> and </prediction>
-                        prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
-                    else:
-                        # No <prediction> tag found - treat as error/missing prediction
-                        prediction_text = None
-
-                    # Store for future loss design
+                    # prediction loss data construction and prediction-step rollout are
+                    # intentionally decoupled: the former only needs the prompt stored
+                    # on the step, while the latter actually queries the model.
                     self.agent.set_step_prediction(
                         prediction=PredictionRecord(
                             prompt=prediction_prompt,
-                            prediction=prediction_text,
+                            prediction="",
                             metadata={
                                 "step_idx": step_idx,
-                                "raw_text": prediction_raw_text,
-                                "reasoning": prediction_reasoning,
+                                "raw_text": "",
+                                "reasoning": "",
+                                "prediction_rollout_skipped": not prediction_step_enabled,
                             },
                         )
                     )
-                    prediction_payload = {
-                        "text": prediction_text or "",
-                        "raw_text": prediction_raw_text or "",
-                        "prompt": prediction_prompt,
-                    }
-                    # Route this step's RL signal to the prediction turn by ensuring the
-                    # step snapshot ends with the prediction assistant message.
-                    # `add_prediction_to_messages` only controls whether prediction text is
-                    # also persisted into live history for future turns.
+
                     cur_step = self.agent.get_current_state()
                     if action_reasoning:
                         if self.agent.messages and self.agent.messages[-1].get("role") == "assistant":
@@ -360,21 +333,55 @@ class PredictiveToolWorkflow(Workflow):
                         if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
                             cur_step.chat_completions[-1]["reasoning"] = action_reasoning
 
-                    prediction_prompt_message = {"role": "user", "content": prediction_prompt}
-                    pred_message = {"role": "assistant", "content": prediction_text or ""}
-                    if prediction_reasoning:
-                        pred_message["reasoning"] = prediction_reasoning
+                    if prediction_step_enabled:
+                        pred_messages = self.agent.chat_completions.copy()
+                        pred_messages.append({"role": "user", "content": prediction_prompt})
 
-                    if self.prediction_cfg.add_prediction_to_messages:
-                        # Keep agent history aligned with the full action->prediction->tool flow.
-                        self.agent.messages.append(prediction_prompt_message)
-                        self.agent.messages.append(pred_message)
+                        pred_output: ModelOutput = await self.rollout_engine.get_model_response(
+                            pred_messages,
+                            application_id=f"{uid}:pred:{step_idx}",
+                            max_tokens=self.prediction_cfg.max_tokens,
+                            **kwargs,
+                        )
 
-                    if cur_step is not None:
-                        # Keep the per-step snapshot aligned with what generated the prediction.
-                        # This is what stepwise RL tokenization uses.
-                        cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
-                        cur_step.chat_completions.append(copy.deepcopy(pred_message))
+                        prediction_raw_text = pred_output.text or ""
+                        if "<prediction>" in prediction_raw_text:
+                            reasoning_part, _, _ = prediction_raw_text.partition("<prediction>")
+                            prediction_reasoning = reasoning_part.strip()
+                            prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
+                        else:
+                            prediction_text = None
+
+                        self.agent.set_step_prediction(
+                            prediction=PredictionRecord(
+                                prompt=prediction_prompt,
+                                prediction=prediction_text or "",
+                                metadata={
+                                    "step_idx": step_idx,
+                                    "raw_text": prediction_raw_text,
+                                    "reasoning": prediction_reasoning,
+                                    "prediction_rollout_skipped": False,
+                                },
+                            )
+                        )
+                        prediction_payload = {
+                            "text": prediction_text or "",
+                            "raw_text": prediction_raw_text or "",
+                            "prompt": prediction_prompt,
+                        }
+
+                        prediction_prompt_message = {"role": "user", "content": prediction_prompt}
+                        pred_message = {"role": "assistant", "content": prediction_text or ""}
+                        if prediction_reasoning:
+                            pred_message["reasoning"] = prediction_reasoning
+
+                        if self.prediction_cfg.add_prediction_to_messages:
+                            self.agent.messages.append(prediction_prompt_message)
+                            self.agent.messages.append(pred_message)
+
+                        if cur_step is not None:
+                            cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
+                            cur_step.chat_completions.append(copy.deepcopy(pred_message))
 
             # 3) Execute in env.
             # For PredictiveToolEnvironment, pass enhanced action so similarity reward can be computed.

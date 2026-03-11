@@ -1,4 +1,4 @@
-import hydra
+git aimport hydra
 import os
 
 from hydra.utils import get_original_cwd
@@ -89,6 +89,7 @@ def main(config):
 
     default_prediction_cfg = {
         "enabled": enable_prediction,
+        "collect_loss_targets": config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0,
         "max_tokens": 256,
         "add_prediction_to_messages": True,
     }
