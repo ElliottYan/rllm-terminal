@@ -32,7 +32,9 @@ class PredictionConfig:
     # The per-step training snapshot always includes prediction so RL reward is attached
     # to the prediction assistant turn.
     add_prediction_to_messages: bool = True
-    simple_tir: bool = False  # if True, filter out steps without tool calls from training data
+    simple_tir: bool = (
+        False  # if True, filter out steps without tool calls from training data
+    )
 
 
 @dataclass
@@ -77,7 +79,9 @@ class PredictiveToolWorkflow(Workflow):
         super().__init__(**kwargs)
 
         # Resolve mappings if strings are provided (mirrors existing workflows).
-        agent_cls = AGENT_CLASS_MAPPING[agent_cls] if isinstance(agent_cls, str) else agent_cls
+        agent_cls = (
+            AGENT_CLASS_MAPPING[agent_cls] if isinstance(agent_cls, str) else agent_cls
+        )
         env_cls = ENV_CLASS_MAPPING[env_cls] if isinstance(env_cls, str) else env_cls
 
         agent_args = dict(agent_args) if agent_args is not None else {}
@@ -102,10 +106,14 @@ class PredictiveToolWorkflow(Workflow):
         else:
             self.trajectory_logging = TrajectoryLoggingConfig(**trajectory_logging)
 
-        if self.prediction_cfg.enabled and not isinstance(self.agent, PredictiveToolAgent):
+        if self.prediction_cfg.enabled and not isinstance(
+            self.agent, PredictiveToolAgent
+        ):
             # We don't hard-require PredictiveToolAgent, but it provides a clean storage API.
             # Keeping this as a runtime check makes failure modes obvious.
-            raise TypeError(f"PredictiveToolWorkflow requires agent_cls to be PredictiveToolAgent when prediction is enabled, got {type(self.agent)}")
+            raise TypeError(
+                f"PredictiveToolWorkflow requires agent_cls to be PredictiveToolAgent when prediction is enabled, got {type(self.agent)}"
+            )
 
     def _build_prediction_prompt(self, action_obj: Any) -> Optional[str]:
         """
@@ -191,7 +199,9 @@ class PredictiveToolWorkflow(Workflow):
             return {}, ""
 
         normalized_outputs = {str(k): str(v) for k, v in tool_outputs.items()}
-        ordered_output = " ".join(normalized_outputs[k] for k in sorted(normalized_outputs.keys()))
+        ordered_output = " ".join(
+            normalized_outputs[k] for k in sorted(normalized_outputs.keys())
+        )
         return normalized_outputs, ordered_output
 
     @staticmethod
@@ -202,7 +212,9 @@ class PredictiveToolWorkflow(Workflow):
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, dict):
-            return {str(k): PredictiveToolWorkflow._to_jsonable(v) for k, v in value.items()}
+            return {
+                str(k): PredictiveToolWorkflow._to_jsonable(v) for k, v in value.items()
+            }
         if isinstance(value, (list, tuple)):
             return [PredictiveToolWorkflow._to_jsonable(v) for v in value]
         if hasattr(value, "value"):
@@ -215,8 +227,14 @@ class PredictiveToolWorkflow(Workflow):
 
     def _step_log_record(self, step_idx: int, step) -> dict[str, Any]:
         step_info = step.info if isinstance(step.info, dict) else {}
-        prediction_record = step_info.get(PredictiveToolAgent.INFO_KEY_PREDICTION, {}) or {}
-        prediction_metadata = prediction_record.get("metadata", {}) if isinstance(prediction_record, dict) else {}
+        prediction_record = (
+            step_info.get(PredictiveToolAgent.INFO_KEY_PREDICTION, {}) or {}
+        )
+        prediction_metadata = (
+            prediction_record.get("metadata", {})
+            if isinstance(prediction_record, dict)
+            else {}
+        )
 
         actual_output = step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT, "")
         if not isinstance(actual_output, str):
@@ -231,21 +249,37 @@ class PredictiveToolWorkflow(Workflow):
             "observation_pre_action": self._to_jsonable(step.observation),
             "tool_output": {
                 "actual_output_text": actual_output,
-                "tool_outputs": self._to_jsonable(step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS, {})),
+                "tool_outputs": self._to_jsonable(
+                    step_info.get(PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS, {})
+                ),
             },
             "predict_target": {
-                "prediction": prediction_record.get("prediction", "") if isinstance(prediction_record, dict) else "",
+                "prediction": prediction_record.get("prediction", "")
+                if isinstance(prediction_record, dict)
+                else "",
                 "actual": actual_output,
-                "has_prediction": bool(prediction_record.get("prediction")) if isinstance(prediction_record, dict) else False,
-                "prompt": prediction_record.get("prompt", "") if isinstance(prediction_record, dict) else "",
-                "prediction_reasoning": prediction_metadata.get("reasoning", "") if isinstance(prediction_metadata, dict) else "",
-                "prediction_raw_text": prediction_metadata.get("raw_text", "") if isinstance(prediction_metadata, dict) else "",
+                "has_prediction": bool(prediction_record.get("prediction"))
+                if isinstance(prediction_record, dict)
+                else False,
+                "prompt": prediction_record.get("prompt", "")
+                if isinstance(prediction_record, dict)
+                else "",
+                "prediction_reasoning": prediction_metadata.get("reasoning", "")
+                if isinstance(prediction_metadata, dict)
+                else "",
+                "prediction_raw_text": prediction_metadata.get("raw_text", "")
+                if isinstance(prediction_metadata, dict)
+                else "",
             },
             "step_info": self._to_jsonable(step_info),
-            "whole_messages_step_snapshot": self._to_jsonable(step.chat_completions) if self.trajectory_logging.include_step_chat_completions else None,
+            "whole_messages_step_snapshot": self._to_jsonable(step.chat_completions)
+            if self.trajectory_logging.include_step_chat_completions
+            else None,
         }
 
-    def _save_episode_log(self, episode: Episode, uid: str, termination_reason: TerminationReason) -> None:
+    def _save_episode_log(
+        self, episode: Episode, uid: str, termination_reason: TerminationReason
+    ) -> None:
         if not self.trajectory_logging.enabled:
             return
 
@@ -255,7 +289,10 @@ class PredictiveToolWorkflow(Workflow):
 
             if episode.trajectories:
                 trajectory = episode.trajectories[0]
-                step_logs = [self._step_log_record(step_idx, step) for step_idx, step in enumerate(trajectory.steps)]
+                step_logs = [
+                    self._step_log_record(step_idx, step)
+                    for step_idx, step in enumerate(trajectory.steps)
+                ]
                 trajectory_task = trajectory.task
             else:
                 step_logs = []
@@ -268,17 +305,26 @@ class PredictiveToolWorkflow(Workflow):
             payload = {
                 "episode_id": uid,
                 "timestamp_utc": timestamp,
-                "termination_reason": termination_reason.value if isinstance(termination_reason, TerminationReason) else str(termination_reason),
+                "termination_reason": termination_reason.value
+                if isinstance(termination_reason, TerminationReason)
+                else str(termination_reason),
                 "task": self._to_jsonable(episode.task),
                 "trajectory_task": self._to_jsonable(trajectory_task),
                 "metrics": self._to_jsonable(episode.metrics),
                 "num_steps": len(step_logs),
                 "steps": step_logs,
-                "whole_messages_final": self._to_jsonable(self.agent.messages) if self.trajectory_logging.include_final_messages else None,
+                "whole_messages_final": self._to_jsonable(self.agent.messages)
+                if self.trajectory_logging.include_final_messages
+                else None,
             }
 
             with file_path.open("w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2 if self.trajectory_logging.pretty_json else None)
+                json.dump(
+                    payload,
+                    f,
+                    ensure_ascii=False,
+                    indent=2 if self.trajectory_logging.pretty_json else None,
+                )
                 if not self.trajectory_logging.pretty_json:
                     f.write("\n")
         except Exception as exc:
@@ -293,66 +339,95 @@ class PredictiveToolWorkflow(Workflow):
 
         for step_idx in range(self.max_steps):
             # 1) Action
-            output: ModelOutput = await self.rollout_engine.get_model_response(self.agent.chat_completions, application_id=f"{uid}:act:{step_idx}", **kwargs)
+            output: ModelOutput = await self.rollout_engine.get_model_response(
+                self.agent.chat_completions,
+                application_id=f"{uid}:act:{step_idx}",
+                **kwargs,
+            )
             response = output.text
-            action = self.agent.update_from_model(response, return_action_dict=True)  # Get action but don't append to messages yet
+            action = self.agent.update_from_model(
+                response, return_action_dict=True
+            )  # Get action but don't append to messages yet
             raw_action = action.action
             action_reasoning = output.reasoning  # Extract reasoning from action output
 
             # 2) Prediction sub-step
-            prediction_text = None
-            prediction_reasoning = None
-            prediction_raw_text = None
             prediction_prompt = None
             prediction_payload = None
-            prediction_step_enabled = bool(getattr(self.prediction_cfg, "enable_prediction_step", False))
-            prediction_loss_enabled = bool(getattr(self.prediction_cfg, "enable_prediction_loss", False))
+            prediction_step_enabled = bool(
+                getattr(self.prediction_cfg, "enable_prediction_step", False)
+            )
+            prediction_loss_enabled = bool(
+                getattr(self.prediction_cfg, "enable_prediction_loss", False)
+            )
+            # When prediction_step is disabled but loss is enabled, embed prediction
+            # messages into chat_completions to reuse the main forward pass.
+            embed_prediction_in_chat = (
+                prediction_loss_enabled and not prediction_step_enabled
+            )
+
             if prediction_step_enabled or prediction_loss_enabled:
                 prediction_prompt = self._build_prediction_prompt(raw_action)
-                # the tool call is not a finish tool.
                 if prediction_prompt is not None:
-                    # prediction loss data construction and prediction-step rollout are
-                    # intentionally decoupled: the former only needs the prompt stored
-                    # on the step, while the latter actually queries the model.
-                    self.agent.set_step_prediction(
-                        prediction=PredictionRecord(
-                            prompt=prediction_prompt,
-                            prediction="",
-                            metadata={
-                                "step_idx": step_idx,
-                                "raw_text": "",
-                                "reasoning": "",
-                                "prediction_rollout_skipped": not prediction_step_enabled,
-                            },
-                        )
-                    )
-
                     cur_step = self.agent.get_current_state()
+                    # Attach action reasoning to the assistant message.
                     if action_reasoning:
-                        if self.agent.messages and self.agent.messages[-1].get("role") == "assistant":
+                        if (
+                            self.agent.messages
+                            and self.agent.messages[-1].get("role") == "assistant"
+                        ):
                             self.agent.messages[-1]["reasoning"] = action_reasoning
-                        if cur_step is not None and cur_step.chat_completions and cur_step.chat_completions[-1].get("role") == "assistant":
-                            cur_step.chat_completions[-1]["reasoning"] = action_reasoning
-
-                    # no matter what, add prediction prompt
-                    pred_messages = self.agent.chat_completions.copy()
-                    pred_messages.append({"role": "user", "content": prediction_prompt})
+                        if (
+                            cur_step is not None
+                            and cur_step.chat_completions
+                            and cur_step.chat_completions[-1].get("role") == "assistant"
+                        ):
+                            cur_step.chat_completions[-1]["reasoning"] = (
+                                action_reasoning
+                            )
 
                     if prediction_step_enabled:
-                        pred_output: ModelOutput = await self.rollout_engine.get_model_response(
-                            pred_messages,
-                            application_id=f"{uid}:pred:{step_idx}",
-                            max_tokens=self.prediction_cfg.max_tokens,
-                            **kwargs,
+                        # OLD behaviour: model generates a prediction via a separate
+                        # rollout call.  Prediction messages are appended to both
+                        # agent.messages and cur_step.chat_completions.
+                        self.agent.set_step_prediction(
+                            prediction=PredictionRecord(
+                                prompt=prediction_prompt,
+                                prediction="",
+                                metadata={
+                                    "step_idx": step_idx,
+                                    "raw_text": "",
+                                    "reasoning": "",
+                                    "prediction_rollout_skipped": False,
+                                },
+                            )
+                        )
+
+                        pred_messages = self.agent.chat_completions.copy()
+                        pred_messages.append(
+                            {"role": "user", "content": prediction_prompt}
+                        )
+
+                        pred_output: ModelOutput = (
+                            await self.rollout_engine.get_model_response(
+                                pred_messages,
+                                application_id=f"{uid}:pred:{step_idx}",
+                                max_tokens=self.prediction_cfg.max_tokens,
+                                **kwargs,
+                            )
                         )
 
                         prediction_raw_text = pred_output.text or ""
+                        prediction_reasoning = None
+                        prediction_text = None
                         if "<prediction>" in prediction_raw_text:
-                            reasoning_part, _, _ = prediction_raw_text.partition("<prediction>")
+                            reasoning_part, _, _ = prediction_raw_text.partition(
+                                "<prediction>"
+                            )
                             prediction_reasoning = reasoning_part.strip()
-                            prediction_text = self._extract_tagged_block(prediction_raw_text, "prediction")
-                        else:
-                            prediction_text = None
+                            prediction_text = self._extract_tagged_block(
+                                prediction_raw_text, "prediction"
+                            )
 
                         self.agent.set_step_prediction(
                             prediction=PredictionRecord(
@@ -372,8 +447,14 @@ class PredictiveToolWorkflow(Workflow):
                             "prompt": prediction_prompt,
                         }
 
-                        prediction_prompt_message = {"role": "user", "content": prediction_prompt}
-                        pred_message = {"role": "assistant", "content": prediction_text or ""}
+                        prediction_prompt_message = {
+                            "role": "user",
+                            "content": prediction_prompt,
+                        }
+                        pred_message = {
+                            "role": "assistant",
+                            "content": prediction_text or "",
+                        }
                         if prediction_reasoning:
                             pred_message["reasoning"] = prediction_reasoning
 
@@ -382,16 +463,62 @@ class PredictiveToolWorkflow(Workflow):
                             self.agent.messages.append(pred_message)
 
                         if cur_step is not None:
-                            cur_step.chat_completions.append(copy.deepcopy(prediction_prompt_message))
-                            cur_step.chat_completions.append(copy.deepcopy(pred_message))
+                            cur_step.chat_completions.append(
+                                copy.deepcopy(prediction_prompt_message)
+                            )
+                            cur_step.chat_completions.append(
+                                copy.deepcopy(pred_message)
+                            )
+
+                    elif embed_prediction_in_chat:
+                        # NEW: store minimal prediction record for logging only.
+                        # The actual prediction loss data is embedded directly into
+                        # chat_completions after env.step (see step 4 below).
+                        self.agent.set_step_prediction(
+                            prediction=PredictionRecord(
+                                prompt=prediction_prompt,
+                                prediction="",
+                                metadata={
+                                    "step_idx": step_idx,
+                                    "prediction_embedded_in_chat": True,
+                                },
+                            )
+                        )
 
             # 3) Execute in env.
-            # For PredictiveToolEnvironment, pass enhanced action so similarity reward can be computed.
-            # Keep compatibility with ToolEnvironment by falling back to raw action otherwise.
             env_action = raw_action
-            if prediction_payload is not None and hasattr(self.env, "similarity_config"):
-                env_action = {"tool_calls": raw_action, "prediction": prediction_payload}
-            next_obs, reward, done, step_info = await self.run_in_executor(self.env.step, env_action)
+            if prediction_payload is not None and hasattr(
+                self.env, "similarity_config"
+            ):
+                env_action = {
+                    "tool_calls": raw_action,
+                    "prediction": prediction_payload,
+                }
+            next_obs, reward, done, step_info = await self.run_in_executor(
+                self.env.step, env_action
+            )
+
+            # 4) Embed prediction messages into chat_completions (before update_from_env).
+            # When embed_prediction_in_chat is active, insert prediction user + assistant
+            # messages containing the actual tool output BEFORE the env observation messages.
+            if embed_prediction_in_chat and prediction_prompt is not None:
+                _, actual_output = self._extract_actual_tool_outputs(next_obs)
+                if actual_output:
+                    cur_step = self.agent.get_current_state()
+                    if cur_step is not None:
+                        pred_msg_user = {"role": "user", "content": prediction_prompt}
+                        pred_msg_asst = {
+                            "role": "assistant",
+                            "content": f"<prediction>{actual_output}</prediction>",
+                            "rllm_prediction": True,
+                        }
+                        cur_step.chat_completions.append(copy.deepcopy(pred_msg_user))
+                        cur_step.chat_completions.append(copy.deepcopy(pred_msg_asst))
+
+                        if self.prediction_cfg.add_prediction_to_messages:
+                            self.agent.messages.append(pred_msg_user)
+                            self.agent.messages.append(pred_msg_asst)
+
             self.agent.update_from_env(next_obs, reward, done, step_info)
 
             # Update the current Step fields for training
@@ -400,18 +527,22 @@ class PredictiveToolWorkflow(Workflow):
                 cur_step.reward = float(reward)
                 cur_step.done = bool(done)
                 cur_step.info.update(step_info or {})
-                actual_tool_outputs, actual_output = self._extract_actual_tool_outputs(next_obs)
-                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS] = actual_tool_outputs
-                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT] = actual_output
-
-                # Note: Prediction data is already stored by agent.set_step_prediction()
-                # in step.info["rllm_ext.prediction"] with all metadata.
-                # No need to duplicate here.
+                actual_tool_outputs, actual_output = self._extract_actual_tool_outputs(
+                    next_obs
+                )
+                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_TOOL_OUTPUTS] = (
+                    actual_tool_outputs
+                )
+                cur_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT] = (
+                    actual_output
+                )
 
             # Check for early termination conditions
             if output.finish_reason == "length":
                 # Model response exceeded max length
-                episode = self._build_episode(task, uid, TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED)
+                episode = self._build_episode(
+                    task, uid, TerminationReason.MAX_RESPONSE_LENGTH_EXCEEDED
+                )
                 return episode
 
             if done:
@@ -447,7 +578,9 @@ class PredictiveToolWorkflow(Workflow):
 
         return False
 
-    def _build_episode(self, task: dict, uid: str, termination_reason: TerminationReason) -> Episode:
+    def _build_episode(
+        self, task: dict, uid: str, termination_reason: TerminationReason
+    ) -> Episode:
         """
         Build an Episode from the agent's trajectory.
 
@@ -465,7 +598,9 @@ class PredictiveToolWorkflow(Workflow):
         # Filter out steps without tool calls if simple_tir is enabled
         if self.prediction_cfg.simple_tir:
             original_steps = agent_trajectory.steps
-            filtered_steps = [step for step in original_steps if self._has_real_tool_call(step)]
+            filtered_steps = [
+                step for step in original_steps if self._has_real_tool_call(step)
+            ]
             agent_trajectory.steps = filtered_steps
 
         # Set the task on the trajectory

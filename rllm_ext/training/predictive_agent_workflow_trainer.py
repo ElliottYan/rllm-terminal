@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from rllm.trainer.verl.agent_workflow_trainer import AgentWorkflowPPOTrainer
-from rllm_ext.training.predictive_agent_workflow_engine import PredictiveAgentWorkflowEngine
+from rllm_ext.training.predictive_agent_workflow_engine import (
+    PredictiveAgentWorkflowEngine,
+)
 
 
 class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
@@ -54,7 +56,9 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         self._replace_workflow_engine()
 
         # Step 4: Replace actor with our extended version
-        if hasattr(self.config, "actor_rollout_ref") and hasattr(self.config.actor_rollout_ref, "actor"):
+        if hasattr(self.config, "actor_rollout_ref") and hasattr(
+            self.config.actor_rollout_ref, "actor"
+        ):
             if self.config.actor_rollout_ref.actor.get("prediction_loss_weight", 0) > 0:
                 if hasattr(self.actor_rollout_wg, "execute_all_sync"):
                     print("PredictiveActor injected via remote worker init_model")
@@ -94,20 +98,16 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         """
         Replace the default AgentWorkflowEngine with PredictiveAgentWorkflowEngine.
 
-        This is called after parent's init_workers to swap in our custom engine.
+        Reuses the existing rollout engine from the parent's init_workers to avoid
+        creating a duplicate VerlEngine (which would waste resources and potentially
+        leak GPU memory).
         """
         import asyncio
 
-        from rllm.engine.rollout.verl_engine import VerlEngine
+        # Reuse the existing rollout engine from the parent's init_workers
+        rollout_engine = self.agent_execution_engine.rollout_engine
 
-        # Create new rollout engine (same as parent)
-        rollout_engine = VerlEngine(
-            config=self.config,
-            rollout_manager=self.async_rollout_manager,
-            tokenizer=self.tokenizer,
-        )
-
-        # Create PredictiveAgentWorkflowEngine with same config
+        # Create PredictiveAgentWorkflowEngine with the shared rollout engine
         predictive_engine = PredictiveAgentWorkflowEngine(
             workflow_cls=self.workflow_class,
             workflow_args=self.workflow_args,
@@ -118,11 +118,15 @@ class PredictiveAgentWorkflowTrainer(AgentWorkflowPPOTrainer):
         )
 
         # Initialize the new engine's worker pool
-        asyncio.run_coroutine_threadsafe(predictive_engine.initialize_pool(), self._loop).result()
+        asyncio.run_coroutine_threadsafe(
+            predictive_engine.initialize_pool(), self._loop
+        ).result()
 
-        # Replace the engine
-        # Note: shutdown the old engine's pool first to avoid resource leaks
-        if hasattr(self.agent_execution_engine, "executor") and self.agent_execution_engine.executor is not None:
+        # Shutdown the old engine's pool (but NOT the rollout engine, which is shared)
+        if (
+            hasattr(self.agent_execution_engine, "executor")
+            and self.agent_execution_engine.executor is not None
+        ):
             self.agent_execution_engine.shutdown()
 
         self.agent_execution_engine = predictive_engine

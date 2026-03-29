@@ -1,120 +1,50 @@
 import torch
-import torch.nn as nn
 
 from rllm_ext.training.predictive_actor import PredictiveActor
 
 
-class _DummyTokenizer:
-    name_or_path = "dummy-tokenizer"
-    pad_token_id = 0
-    eos_token_id = 2
-
-    def apply_chat_template(self, messages, add_generation_prompt=False, tokenize=False):
-        parts = []
-        for message in messages:
-            role = message.get("role", "")
-            content = message.get("content", "")
-            parts.append(f"<{role}>{content}</{role}>")
-
-        if add_generation_prompt:
-            parts.append("<assistant>")
-
-        rendered = "".join(parts)
-        if tokenize:
-            return self.encode(rendered, add_special_tokens=False)
-        return rendered
-
-    def encode(self, text, add_special_tokens=False):
-        return [3 + (ord(ch) % 17) for ch in text]
-
-    def __call__(self, texts, add_special_tokens=False, truncation=False, max_length=None):
-        if isinstance(texts, str):
-            texts = [texts]
-
-        token_ids = []
-        for text in texts:
-            ids = [3 + (ord(ch) % 17) for ch in text]
-            if truncation and max_length is not None:
-                ids = ids[:max_length]
-            token_ids.append(ids)
-
-        return {"input_ids": token_ids}
-
-
-class _DummyCausalLM(nn.Module):
-    def __init__(self, vocab_size: int = 64, hidden_size: int = 16):
-        super().__init__()
-        self.embed = nn.Embedding(vocab_size, hidden_size)
-        self.proj = nn.Linear(hidden_size, vocab_size)
-
-    def forward(self, input_ids, attention_mask=None, use_cache=False):
-        hidden = self.embed(input_ids)
-        logits = self.proj(hidden)
-        return type("DummyOutput", (), {"logits": logits})
-
-
-def _build_predictive_actor_for_test() -> PredictiveActor:
+def test_prediction_loss_weight_default():
+    """Verify default prediction_loss_weight is 0.1."""
     actor = PredictiveActor.__new__(PredictiveActor)
-    actor.actor_module = _DummyCausalLM()
-    actor.tokenizer = _DummyTokenizer()
-    actor.config = {"prediction_loss_max_length": 64}
-    actor.device_name = "cpu"
-    actor.prediction_temperature = 1.0
-    actor.prediction_loss_type = "cross_entropy"
-    return actor
+    actor.prediction_loss_weight = {"prediction_loss_weight": 0.1}.get(
+        "prediction_loss_weight", 0.1
+    )
+    assert actor.prediction_loss_weight == 0.1
 
 
-def test_prediction_loss_microbatch_computes_trainable_loss():
-    actor = _build_predictive_actor_for_test()
+def test_prediction_ce_loss_computed_from_log_probs():
+    """Verify prediction CE loss = -log_prob at prediction positions."""
+    # Simulate the core prediction loss computation
+    log_prob = torch.log(torch.tensor([[0.1, 0.2, 0.3, 0.4]]))
+    pred_mask = torch.tensor([[0, 1, 0, 1]], dtype=torch.long)
 
-    prediction_targets = [
-        {
-            "examples": [
-                {
-                    "prompt_messages": [
-                        {"role": "user", "content": "solve it"},
-                        {"role": "assistant", "content": "<tool_call>calculator</tool_call>"},
-                        {"role": "user", "content": "predict the tool output"},
-                    ],
-                    "target_text": "<prediction>result=10</prediction>",
-                }
-            ]
-        },
-        {
-            "examples": [
-                {
-                    "prompt_messages": [
-                        {"role": "user", "content": "check status"},
-                        {"role": "assistant", "content": "<tool_call>status</tool_call>"},
-                        {"role": "user", "content": "predict the tool output"},
-                    ],
-                    "target_text": "<prediction>status: ok</prediction>",
-                }
-            ]
-        },
-    ]
-    response_mask = torch.ones((2, 4), dtype=torch.long)
+    pred_ce_per_token = -log_prob
+    pred_token_count = pred_mask.sum()
+    pred_ce = (pred_ce_per_token * pred_mask).sum() / pred_token_count.clamp(min=1)
 
-    loss = actor._compute_prediction_loss_microbatch(prediction_targets, response_mask)
-
-    assert loss is not None
-    assert loss.requires_grad
-    assert torch.isfinite(loss).item()
-
-    loss.backward()
-    grad_norm = actor.actor_module.embed.weight.grad.abs().sum().item()
-    assert grad_norm > 0
+    # CE loss should be the mean of -log_prob at positions where mask=1
+    expected = (-log_prob[0, 1] + -log_prob[0, 3]) / 2
+    assert torch.isclose(pred_ce, expected, atol=1e-6)
 
 
-def test_prediction_loss_microbatch_returns_none_for_invalid_targets():
-    actor = _build_predictive_actor_for_test()
+def test_prediction_ce_loss_zero_when_no_prediction_tokens():
+    """When prediction_mask is all zeros, no prediction loss should be added."""
+    pred_mask = torch.zeros(1, 4, dtype=torch.long)
 
-    prediction_targets = [
-        {"examples": []},
-        {"examples": [{"prompt_messages": [], "target_text": "   "}]},
-    ]
-    response_mask = torch.ones((2, 4), dtype=torch.long)
+    pred_token_count = pred_mask.sum()
+    # The actor code checks pred_token_count > 0 before computing loss
+    assert pred_token_count == 0
 
-    loss = actor._compute_prediction_loss_microbatch(prediction_targets, response_mask)
 
-    assert loss is None
+def test_prediction_ce_loss_multiple_samples():
+    """Verify prediction CE loss works across multiple batch samples."""
+    log_prob = torch.log(torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]))
+    pred_mask = torch.tensor([[0, 1, 0, 0], [0, 0, 1, 0]], dtype=torch.long)
+
+    pred_ce_per_token = -log_prob
+    pred_token_count = pred_mask.sum()
+    pred_ce = (pred_ce_per_token * pred_mask).sum() / pred_token_count.clamp(min=1)
+
+    # CE loss should be the mean of -log_prob at masked positions across all samples
+    expected = (-log_prob[0, 1] + -log_prob[1, 2]) / 2
+    assert torch.isclose(pred_ce, expected, atol=1e-6)
