@@ -13,6 +13,12 @@ if [[ "$CURRENT_DIR" == /mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/* ]]
 elif [[ "$CURRENT_DIR" == /mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/* ]]; then
     echo "Detected hdd_pool path, sourcing zw_env.sh..."
     source $(dirname "$0")/zw_env.sh
+elif [[ "$CURRENT_DIR" == /mnt/shared-storage-user/p1-shared/luoyun/elliott/rllm-terminal/* ]]; then
+    echo "Detected p1 path, sourcing p1_env.sh..."
+    source $(dirname "$0")/p1_env.sh
+# elif [[ "$CURRENT_DIR" == /mnt/shared-storage-user/p1-shared/luoyun/elliott/rllm-terminal/* ]]; then
+    # echo "Detected p1 path, sourcing p1_env.sh..."
+    # source $(dirname "$0")/p1_env.sh
 else
     echo "Warning: Unknown path prefix, defaulting to sh_env.sh..."
     source $(dirname "$0")/sh_env.sh
