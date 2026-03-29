@@ -26,6 +26,8 @@ PREDICTION_LOSS_WEIGHT="${PREDICTION_LOSS_WEIGHT:-0.0}"
 PREDICTION_LOSS_TYPE="${PREDICTION_LOSS_TYPE:-cross_entropy}"
 PREDICTION_TEMPERATURE="${PREDICTION_TEMPERATURE:-1.0}"
 
+SAVE_FREQ="${SAVE_FREQ:-1}"
+
 PROJECT_NAME="${PROJECT_NAME:-rllm-agent}"
 # RAY_LAUNCH_SCRIPT="${RAY_LAUNCH_SCRIPT:-/$LOCAL_DIR/rllm-terminal/examples/math_tool/ray_launch.py}"
 RAY_LAUNCH_SCRIPT=$LOCAL_DIR/rllm-terminal/examples/math_tool/ray_launch.py
@@ -50,6 +52,20 @@ export TENSORBOARD_DIR="${TENSORBOARD_DIR:-${LOCAL_PWD}/tensorboard/${EXP}}"
 mkdir -p "${TENSORBOARD_DIR}"
 
 export RAY_DEBUG=legacy
+
+export WANDB_MODE=offline
+
+export WANDB_DIR=$LOCAL_PWD/wandb-negative
+export WANDB_CACHE_DIR=$WANDB_DIR/.cache/wandb
+export WANDB_CONFIG_DIR=$WANDB_DIR/.config/wandb
+export WANDB_DATA_DIR=$WANDB_DIR/.config/wandb-data
+export WANDB_ARTIFACT_DIR=$WANDB_DIR/artifacts
+mkdir -p $WANDB_DIR
+mkdir -p $WANDB_CACHE_DIR
+mkdir -p $WANDB_CONFIG_DIR
+mkdir -p $WANDB_DATA_DIR
+mkdir -p $WANDB_ARTIFACT_DIR
+
 
 CMD=(
     python3 "${TRAIN_SCRIPT}"
@@ -92,13 +108,13 @@ CMD=(
     "algorithm.kl_ctrl.kl_coef=0.001"
     "rllm.mask_truncated_samples=False"
     "trainer.critic_warmup=0"
-    "trainer.logger=['console','tensorboard']"
+    "trainer.logger=['console','wandb','tensorboard']"
     "trainer.project_name=${PROJECT_NAME}"
     "trainer.experiment_name=${EXP}"
     "trainer.val_before_train=False"
     "trainer.n_gpus_per_node=${NGPUS}"
     "trainer.nnodes=${NNODE}"
-    "trainer.save_freq=100"
+    "trainer.save_freq=${SAVE_FREQ}"
     "trainer.test_freq=20"
     "trainer.default_hdfs_dir=null"
     "trainer.default_local_dir=${PROJ_DIR}"
