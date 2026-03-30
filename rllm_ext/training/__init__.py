@@ -39,15 +39,27 @@ Usage (Low-level API):
     ```
 """
 
-from rllm_ext.training.predictive_agent_trainer import PredictiveAgentTrainer
 from rllm_ext.training.predictive_agent_workflow_engine import PredictiveAgentWorkflowEngine
 from rllm_ext.training.predictive_actor import PredictiveActor, create_predictive_actor
-from rllm_ext.training.predictive_agent_workflow_trainer import PredictiveAgentWorkflowTrainer
 
 __all__ = [
-    "PredictiveAgentTrainer",  # High-level API (recommended)
     "PredictiveAgentWorkflowEngine",
     "PredictiveActor",
     "create_predictive_actor",
-    "PredictiveAgentWorkflowTrainer",  # Low-level API
 ]
+
+try:
+    from rllm_ext.training.predictive_agent_trainer import PredictiveAgentTrainer
+
+    __all__.append("PredictiveAgentTrainer")  # High-level API (recommended)
+except ImportError:
+    PredictiveAgentTrainer = None
+
+try:
+    from rllm_ext.training.predictive_agent_workflow_trainer import (
+        PredictiveAgentWorkflowTrainer,
+    )
+
+    __all__.append("PredictiveAgentWorkflowTrainer")  # Low-level API
+except ImportError:
+    PredictiveAgentWorkflowTrainer = None

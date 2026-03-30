@@ -58,6 +58,13 @@ def _install_optional_dependency_stubs() -> None:
         transformers.PreTrainedTokenizerBase = _PreTrainedTokenizerBase
         sys.modules["transformers"] = transformers
 
+    if "PIL" not in sys.modules:
+        pil = ModuleType("PIL")
+        image = ModuleType("PIL.Image")
+        pil.Image = image
+        sys.modules["PIL"] = pil
+        sys.modules["PIL.Image"] = image
+
 
 _install_optional_dependency_stubs()
 
@@ -187,6 +194,9 @@ class _DummyRolloutEngine:
         self.calls.append(
             {
                 "application_id": kwargs.get("application_id"),
+                "enforce_max_prompt_length": kwargs.get(
+                    "enforce_max_prompt_length"
+                ),
                 "messages": copy.deepcopy(messages),
             }
         )
@@ -204,8 +214,18 @@ class _DummyRolloutEngine:
         )
 
 
-def _run_workflow(add_prediction_to_messages: bool):
-    rollout_engine = _DummyRolloutEngine(["TOOL:print(2 + 2)", "FINAL 4"])
+def _run_workflow(
+    add_prediction_to_messages: bool,
+    *,
+    enable_prediction_loss: bool = True,
+    enable_prediction_step: bool = False,
+    enforce_max_prompt_length: bool = True,
+):
+    responses = ["TOOL:print(2 + 2)"]
+    if enable_prediction_step:
+        responses.append("<prediction>4</prediction>")
+    responses.append("FINAL 4")
+    rollout_engine = _DummyRolloutEngine(responses)
     task = {"question": "What is 2 + 2?"}
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -215,8 +235,9 @@ def _run_workflow(add_prediction_to_messages: bool):
             max_steps=4,
             prediction_cfg={
                 "enabled": True,
-                "enable_prediction_loss": True,
-                "enable_prediction_step": False,
+                "enable_prediction_loss": enable_prediction_loss,
+                "enable_prediction_step": enable_prediction_step,
+                "enforce_max_prompt_length": enforce_max_prompt_length,
                 "add_prediction_to_messages": add_prediction_to_messages,
             },
             rollout_engine=rollout_engine,
@@ -227,7 +248,7 @@ def _run_workflow(add_prediction_to_messages: bool):
     return episode, workflow, rollout_engine
 
 
-def test_prediction_loss_keeps_training_transcript_without_live_message_pollution():
+def test_prediction_loss_keeps_rollout_context_clean_and_stores_metadata():
     episode, workflow, rollout_engine = _run_workflow(
         add_prediction_to_messages=False
     )
@@ -248,12 +269,11 @@ def test_prediction_loss_keeps_training_transcript_without_live_message_pollutio
     )
 
     final_training_messages = trajectory.steps[-1].chat_completions
-    assert any(
+    assert not any(
         "PREDICTION MODE" in message.get("content", "")
         for message in final_training_messages
-        if message.get("role") == "user"
     )
-    assert any(
+    assert not any(
         message.get("rllm_prediction", False) for message in final_training_messages
     )
 
@@ -263,6 +283,13 @@ def test_prediction_loss_keeps_training_transcript_without_live_message_pollutio
     )
     assert not any(
         message.get("rllm_prediction", False) for message in workflow.agent.messages
+    )
+
+    first_step_info = trajectory.steps[0].info
+    prediction_record = first_step_info[PredictiveToolAgent.INFO_KEY_PREDICTION]
+    assert "PREDICTION MODE" in prediction_record["prompt"]
+    assert (
+        first_step_info[PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT] == "4"
     )
 
 
@@ -291,3 +318,17 @@ def test_prediction_messages_still_reach_live_context_when_explicitly_enabled():
         for message in workflow.agent.messages
         if message.get("role") == "user"
     )
+
+
+def test_prediction_step_inherits_prompt_length_enforcement_setting():
+    _episode, _workflow, rollout_engine = _run_workflow(
+        add_prediction_to_messages=False,
+        enable_prediction_loss=False,
+        enable_prediction_step=True,
+        enforce_max_prompt_length=False,
+    )
+
+    pred_call = next(
+        call for call in rollout_engine.calls if call["application_id"] == "task-0:pred:0"
+    )
+    assert pred_call["enforce_max_prompt_length"] is False

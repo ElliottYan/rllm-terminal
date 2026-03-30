@@ -1,10 +1,76 @@
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import torch
 
+
+def _install_optional_dependency_stubs() -> None:
+    if "pylatexenc" not in sys.modules:
+        latex2text = ModuleType("pylatexenc.latex2text")
+
+        class _LatexNodes2Text:
+            def latex_to_text(self, expr):
+                return expr
+
+        latex2text.LatexNodes2Text = _LatexNodes2Text
+        pylatexenc = ModuleType("pylatexenc")
+        pylatexenc.latex2text = latex2text
+        sys.modules["pylatexenc"] = pylatexenc
+        sys.modules["pylatexenc.latex2text"] = latex2text
+
+    if "httpx" not in sys.modules:
+        httpx = ModuleType("httpx")
+
+        class _DummyResponse:
+            is_success = True
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {}
+
+        class _DummyClient:
+            def get(self, *args, **kwargs):
+                return _DummyResponse()
+
+            def post(self, *args, **kwargs):
+                return _DummyResponse()
+
+            def close(self):
+                return None
+
+        httpx.Client = _DummyClient
+        httpx.AsyncClient = _DummyClient
+        sys.modules["httpx"] = httpx
+
+    if "firecrawl" not in sys.modules:
+        firecrawl = ModuleType("firecrawl")
+        firecrawl.FirecrawlApp = SimpleNamespace
+        sys.modules["firecrawl"] = firecrawl
+
+    if "transformers" not in sys.modules:
+        transformers = ModuleType("transformers")
+
+        class _PreTrainedTokenizerBase:
+            pass
+
+        transformers.PreTrainedTokenizerBase = _PreTrainedTokenizerBase
+        sys.modules["transformers"] = transformers
+
+    if "PIL" not in sys.modules:
+        pil = ModuleType("PIL")
+        image = ModuleType("PIL.Image")
+        pil.Image = image
+        sys.modules["PIL"] = pil
+        sys.modules["PIL.Image"] = image
+
+
+_install_optional_dependency_stubs()
+
 from rllm.agents.agent import Episode, Step, Trajectory
 from rllm.engine.agent_workflow_engine import AgentWorkflowEngine
+from rllm_ext.agents.predictive_tool_agent import PredictiveToolAgent
 from rllm_ext.training.predictive_agent_workflow_engine import (
     PredictiveAgentWorkflowEngine,
 )
@@ -212,3 +278,70 @@ def test_transform_results_for_verl_stepwise_mode_uses_zero_masks(monkeypatch):
     pred_mask = batch.batch["prediction_mask"]
     assert pred_mask.shape == (2, 64)
     assert (pred_mask == 0).all()
+
+
+def test_transform_results_for_verl_falls_back_to_prediction_targets(
+    monkeypatch,
+):
+    engine = PredictiveAgentWorkflowEngine.__new__(PredictiveAgentWorkflowEngine)
+    engine.config = SimpleNamespace(
+        rllm=SimpleNamespace(stepwise_advantage=SimpleNamespace(enable=False)),
+        data=SimpleNamespace(max_response_length=64),
+    )
+    engine.rollout_engine = SimpleNamespace(chat_parser=_DummyChatParser())
+
+    class _DummyBatch:
+        def __init__(self):
+            self.batch = {
+                "response_mask": torch.ones((1, 64), dtype=torch.long),
+            }
+            self.non_tensor_batch = {
+                "step_ids": np.array(["task0_agent"], dtype=object)
+            }
+
+    monkeypatch.setattr(
+        AgentWorkflowEngine,
+        "transform_results_for_verl",
+        lambda self, episodes, task_ids: _DummyBatch(),
+    )
+
+    first_step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "action"},
+        ],
+        info={
+            PredictiveToolAgent.INFO_KEY_PREDICTION: {
+                "prompt": "PREDICTION MODE: predict the tool output",
+                "prediction": "",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT: "4",
+        },
+    )
+    second_step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "action"},
+            {"role": "tool", "content": "4", "tool_call_id": "tool-0"},
+            {"role": "assistant", "content": "FINAL 4"},
+        ]
+    )
+    episode = Episode(trajectories=[Trajectory(steps=[first_step, second_step])])
+
+    batch = engine.transform_results_for_verl(
+        [episode], np.array(["task0"], dtype=object)
+    )
+
+    pred_mask = batch.batch["prediction_mask"]
+    assert pred_mask.shape == (1, 64)
+    assert (pred_mask == 0).all()
+
+    prediction_target = batch.non_tensor_batch["prediction_targets"][0]
+    assert prediction_target["has_prediction_target"] is True
+    assert len(prediction_target["examples"]) == 1
+    example = prediction_target["examples"][0]
+    assert example["target_text"] == "<prediction>4</prediction>"
+    assert example["prompt_messages"][-1]["content"].startswith("PREDICTION MODE")

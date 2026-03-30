@@ -29,9 +29,10 @@ class PredictionConfig:
     enable_prediction_loss: bool = False
     enable_prediction_step: bool = False
     max_tokens: int = 256
-    # If True, prediction prompt/answer are kept in live message history for future turns.
-    # The per-step training snapshot always includes prediction so RL reward is attached
-    # to the prediction assistant turn.
+    # If True, prediction prompt/answer are kept in live message history for future turns
+    # and therefore appear in trajectory chat snapshots as normal conversation turns.
+    # If False, prediction data is kept only in Step.info so later action steps stay
+    # aligned with the context that was actually sampled during rollout.
     add_prediction_to_messages: bool = True
     simple_tir: bool = (
         False  # if True, filter out steps without tool calls from training data
@@ -205,50 +206,6 @@ class PredictiveToolWorkflow(Workflow):
         )
         return normalized_outputs, ordered_output
 
-    def _format_observation_as_messages(self, observation: Any) -> list[dict[str, Any]]:
-        """
-        Format environment observations into chat messages without mutating live agent state.
-
-        We mirror ToolAgent's observation formatting so training-only transcripts can stay
-        cumulative even when prediction turns are intentionally excluded from
-        ``self.agent.messages``.
-        """
-        formatter = getattr(self.agent, "_format_observation_as_messages", None)
-        if callable(formatter):
-            return copy.deepcopy(formatter(observation))
-
-        messages: list[dict[str, Any]] = []
-        if isinstance(observation, dict):
-            if "question" in observation:
-                messages.append({"role": "user", "content": observation["question"]})
-            elif "tool_outputs" in observation:
-                for tool_call_id, tool_output_str in observation["tool_outputs"].items():
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "content": tool_output_str,
-                            "tool_call_id": tool_call_id,
-                        }
-                    )
-        elif isinstance(observation, str):
-            messages.append({"role": "user", "content": observation})
-        elif observation:
-            messages.append({"role": "user", "content": str(observation)})
-
-        return messages
-
-    @staticmethod
-    def _extend_message_buffer(
-        buffer: list[dict[str, Any]], messages: list[dict[str, Any]]
-    ) -> None:
-        for message in messages:
-            buffer.append(copy.deepcopy(message))
-
-    @staticmethod
-    def _sync_step_snapshot(step, training_messages: list[dict[str, Any]]) -> None:
-        if step is not None:
-            step.chat_completions = copy.deepcopy(training_messages)
-
     @staticmethod
     def _to_jsonable(value: Any) -> Any:
         """
@@ -381,7 +338,6 @@ class PredictiveToolWorkflow(Workflow):
         """
         observation, info = await self.run_in_executor(self.reset, task=task, uid=uid)
         self.agent.update_from_env(observation, 0.0, False, info)
-        training_messages = copy.deepcopy(self.agent.chat_completions)
 
         for step_idx in range(self.max_steps):
             # 1) Action
@@ -398,15 +354,6 @@ class PredictiveToolWorkflow(Workflow):
             raw_action = action.action
             action_reasoning = output.reasoning  # Extract reasoning from action output
             cur_step = self.agent.get_current_state()
-            if (
-                cur_step is not None
-                and self.agent.messages
-                and self.agent.messages[-1].get("role") == "assistant"
-            ):
-                self._extend_message_buffer(
-                    training_messages, [self.agent.messages[-1]]
-                )
-                self._sync_step_snapshot(cur_step, training_messages)
 
             # 2) Prediction sub-step
             prediction_prompt = None
@@ -433,11 +380,6 @@ class PredictiveToolWorkflow(Workflow):
                             and self.agent.messages[-1].get("role") == "assistant"
                         ):
                             self.agent.messages[-1]["reasoning"] = action_reasoning
-                        if (
-                            training_messages
-                            and training_messages[-1].get("role") == "assistant"
-                        ):
-                            training_messages[-1]["reasoning"] = action_reasoning
                         if (
                             cur_step is not None
                             and cur_step.chat_completions
@@ -473,6 +415,7 @@ class PredictiveToolWorkflow(Workflow):
                             await self.rollout_engine.get_model_response(
                                 pred_messages,
                                 application_id=f"{uid}:pred:{step_idx}",
+                                enforce_max_prompt_length=self.prediction_cfg.enforce_max_prompt_length,
                                 max_tokens=self.prediction_cfg.max_tokens,
                                 **kwargs,
                             )
@@ -519,16 +462,18 @@ class PredictiveToolWorkflow(Workflow):
                         if prediction_reasoning:
                             pred_message["reasoning"] = prediction_reasoning
 
-                        self._extend_message_buffer(
-                            training_messages,
-                            [prediction_prompt_message, pred_message],
-                        )
                         if self.prediction_cfg.add_prediction_to_messages:
-                            self._extend_message_buffer(
-                                self.agent.messages,
-                                [prediction_prompt_message, pred_message],
+                            self.agent.messages.append(
+                                copy.deepcopy(prediction_prompt_message)
                             )
-                        self._sync_step_snapshot(cur_step, training_messages)
+                            self.agent.messages.append(copy.deepcopy(pred_message))
+                            if cur_step is not None:
+                                cur_step.chat_completions.append(
+                                    copy.deepcopy(prediction_prompt_message)
+                                )
+                                cur_step.chat_completions.append(
+                                    copy.deepcopy(pred_message)
+                                )
 
                     elif embed_prediction_in_chat:
                         # NEW: store minimal prediction record for logging only.
@@ -572,21 +517,18 @@ class PredictiveToolWorkflow(Workflow):
                             "content": f"<prediction>{actual_output}</prediction>",
                             "rllm_prediction": True,
                         }
-                        self._extend_message_buffer(
-                            training_messages, [pred_msg_user, pred_msg_asst]
-                        )
 
                         if self.prediction_cfg.add_prediction_to_messages:
-                            self._extend_message_buffer(
-                                self.agent.messages,
-                                [pred_msg_user, pred_msg_asst],
+                            self.agent.messages.append(copy.deepcopy(pred_msg_user))
+                            self.agent.messages.append(copy.deepcopy(pred_msg_asst))
+                            cur_step.chat_completions.append(
+                                copy.deepcopy(pred_msg_user)
                             )
-                        self._sync_step_snapshot(cur_step, training_messages)
+                            cur_step.chat_completions.append(
+                                copy.deepcopy(pred_msg_asst)
+                            )
 
             self.agent.update_from_env(next_obs, reward, done, step_info)
-            self._extend_message_buffer(
-                training_messages, self._format_observation_as_messages(next_obs)
-            )
 
             # Update the current Step fields for training
             cur_step = self.agent.get_current_state()
