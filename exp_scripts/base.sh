@@ -60,6 +60,8 @@ echo "Trajectory log directory: ${TRAJECTORY_LOG_DIR}"
 echo "Max prompt length: ${MAX_PROMPT_LENGTH}"
 echo "Max response length: ${MAX_RESPONSE_LENGTH}"
 echo "Compact filtering enabled: ${COMPACT_FILTERING_ENABLED}"
+echo "Add prediction to messages: ${ADD_PREDICTION_TO_MESSAGES}"
+echo "Enforce max prompt length in predictive workflow: ${ENFORCE_MAX_PROMPT_LENGTH}"
 
 if [[ "${TRAJECTORY_LOGGING_ENABLED}" == "true" && "${TRAIN_SCRIPT}" == *"examples/math_tool/train_math_with_tool.py" ]]; then
     echo "Warning: trajectory logging is only implemented in the predictive workflow entry script; current TRAIN_SCRIPT will ignore this flag."
@@ -153,6 +155,7 @@ CMD=(
     "+enable_similarity_reward=${ENABLE_SIMILARITY_REWARD}"
     "+prediction_cfg.max_tokens=${PREDICTION_MAX_TOKENS}"
     "+prediction_cfg.add_prediction_to_messages=${ADD_PREDICTION_TO_MESSAGES}"
+    "+prediction_cfg.enforce_max_prompt_length=${ENFORCE_MAX_PROMPT_LENGTH}"
     "+prediction_cfg.simple_tir=${SIMPLE_TIR}"
     "+trajectory_logging.enabled=${TRAJECTORY_LOGGING_ENABLED}"
     "+trajectory_logging.log_dir=${TRAJECTORY_LOG_DIR}"
