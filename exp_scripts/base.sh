@@ -8,6 +8,9 @@ source "${SCRIPT_DIR}/auto_env.sh"
 
 EXP="${EXP:-pred_max2}"
 PROJ_DIR="${PROJ_DIR:-${LOCAL_PWD}/exp/${EXP}}"
+RUN_LOGGING_ENABLED="${RUN_LOGGING_ENABLED:-false}"
+RUN_LOG_DIR="${RUN_LOG_DIR:-${PROJ_DIR}/logs}"
+RUN_LOG_FILE="${RUN_LOG_FILE:-${RUN_LOG_DIR}/run_$(date -u +%Y%m%dT%H%M%SZ).log}"
 OFFLOAD="${OFFLOAD:-False}"
 NNODE="${NNODE:-1}"
 NGPUS="${NGPUS:-8}"
@@ -39,6 +42,17 @@ SKIP_INSTALL="${SKIP_INSTALL:-0}"
 EXTRA_HYDRA_ARGS=("$@")
 
 mkdir -p "${PROJ_DIR}"
+
+if [[ "${RUN_LOGGING_ENABLED}" == "true" && -z "${RLLM_RUN_LOG_ACTIVE:-}" ]]; then
+    mkdir -p "${RUN_LOG_DIR}"
+    export RLLM_RUN_LOG_ACTIVE=1
+    exec > >(tee -a "${RUN_LOG_FILE}") 2>&1
+    echo "Run log will be saved to ${RUN_LOG_FILE}"
+fi
+
+echo "Experiment name: ${EXP}"
+echo "Project directory: ${PROJ_DIR}"
+echo "Trajectory log directory: ${TRAJECTORY_LOG_DIR}"
 
 if [[ "${TRAJECTORY_LOGGING_ENABLED}" == "true" && "${TRAIN_SCRIPT}" == *"examples/math_tool/train_math_with_tool.py" ]]; then
     echo "Warning: trajectory logging is only implemented in the predictive workflow entry script; current TRAIN_SCRIPT will ignore this flag."
