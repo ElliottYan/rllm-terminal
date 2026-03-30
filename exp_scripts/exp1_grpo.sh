@@ -1,0 +1,15 @@
+TRAIN_SCRIPT=examples/math_tool/train_math_with_tool.py \
+NGPUS=8 \
+TRAIN_BATCH_SIZE=8 \
+TRAIN_MINI_SIZE=8 \
+TOTAL_EPOCHS=3 \
+MAX_STEPS=100 \
+ENABLE_PREDICTION=false \
+ENABLE_SIMILARITY_REWARD=false \
+PREDICTION_LOSS_WEIGHT=0.0 \
+PREDICTION_LOSS_TYPE=cross_entropy \
+PREDICTION_TEMPERATURE=1.0 \
+SAVE_FREQ=-1 \
+EXP=test_pred_loss_grpo \
+bash exp_scripts/base.sh
+# SKIP_INSTALL=1 \
