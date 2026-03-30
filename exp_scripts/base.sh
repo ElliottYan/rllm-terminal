@@ -21,6 +21,8 @@ ENABLE_SIMILARITY_REWARD="${ENABLE_SIMILARITY_REWARD:-false}"
 PREDICTION_MAX_TOKENS="${PREDICTION_MAX_TOKENS:-256}"
 ADD_PREDICTION_TO_MESSAGES="${ADD_PREDICTION_TO_MESSAGES:-true}"
 SIMPLE_TIR="${SIMPLE_TIR:-false}"
+TRAJECTORY_LOGGING_ENABLED="${TRAJECTORY_LOGGING_ENABLED:-false}"
+TRAJECTORY_LOG_DIR="${TRAJECTORY_LOG_DIR:-${PROJ_DIR}/trajectory_logs}"
 
 PREDICTION_LOSS_WEIGHT="${PREDICTION_LOSS_WEIGHT:-0.0}"
 PREDICTION_LOSS_TYPE="${PREDICTION_LOSS_TYPE:-cross_entropy}"
@@ -37,6 +39,10 @@ SKIP_INSTALL="${SKIP_INSTALL:-0}"
 EXTRA_HYDRA_ARGS=("$@")
 
 mkdir -p "${PROJ_DIR}"
+
+if [[ "${TRAJECTORY_LOGGING_ENABLED}" == "true" && "${TRAIN_SCRIPT}" == *"examples/math_tool/train_math_with_tool.py" ]]; then
+    echo "Warning: trajectory logging is only implemented in the predictive workflow entry script; current TRAIN_SCRIPT will ignore this flag."
+fi
 
 cd "${LOCAL_PWD}"
 if [[ "${SKIP_INSTALL}" != "1" ]]; then
@@ -126,6 +132,8 @@ CMD=(
     "+prediction_cfg.max_tokens=${PREDICTION_MAX_TOKENS}"
     "+prediction_cfg.add_prediction_to_messages=${ADD_PREDICTION_TO_MESSAGES}"
     "+prediction_cfg.simple_tir=${SIMPLE_TIR}"
+    "+trajectory_logging.enabled=${TRAJECTORY_LOGGING_ENABLED}"
+    "+trajectory_logging.log_dir=${TRAJECTORY_LOG_DIR}"
     "+actor_rollout_ref.actor.prediction_loss_weight=${PREDICTION_LOSS_WEIGHT}"
     "+actor_rollout_ref.actor.prediction_loss_type=${PREDICTION_LOSS_TYPE}"
     "+actor_rollout_ref.actor.prediction_temperature=${PREDICTION_TEMPERATURE}"
