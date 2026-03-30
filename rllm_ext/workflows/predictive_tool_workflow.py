@@ -388,6 +388,7 @@ class PredictiveToolWorkflow(Workflow):
             output: ModelOutput = await self.rollout_engine.get_model_response(
                 self.agent.chat_completions,
                 application_id=f"{uid}:act:{step_idx}",
+                enforce_max_prompt_length=self.prediction_cfg.enforce_max_prompt_length,
                 **kwargs,
             )
             response = output.text
