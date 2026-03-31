@@ -1,4 +1,4 @@
-TRAIN_SCRIPT=examples/math_tool/train_math_with_tool.py \
+# Intentionally reuse exp1's default workflow entry from base.sh for closer alignment.
 NGPUS=8 \
 TRAIN_BATCH_SIZE=8 \
 TRAIN_MINI_SIZE=8 \
