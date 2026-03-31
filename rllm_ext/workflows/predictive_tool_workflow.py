@@ -587,6 +587,34 @@ class PredictiveToolWorkflow(Workflow):
 
         return False
 
+    def _classify_step_action(self, step) -> str:
+        """
+        Classify the step action for rollout diagnostics.
+
+        Returns one of:
+        - ``real_tool``: contains at least one non-finish tool call
+        - ``finish_only``: contains only finish tool calls
+        - ``other``: empty / malformed / non-tool action
+        """
+        action = step.action
+        if not action or not isinstance(action, list):
+            return "other"
+
+        has_finish = False
+        for tool_call in action:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function", {})
+            if not isinstance(function, dict):
+                continue
+            tool_name = function.get("name", "")
+            if tool_name and tool_name != "finish":
+                return "real_tool"
+            if tool_name == "finish":
+                has_finish = True
+
+        return "finish_only" if has_finish else "other"
+
     def _build_episode(
         self, task: dict, uid: str, termination_reason: TerminationReason
     ) -> Episode:
@@ -603,10 +631,24 @@ class PredictiveToolWorkflow(Workflow):
         """
         # Get the trajectory from the agent (ToolAgent maintains its own trajectory)
         agent_trajectory = copy.deepcopy(self.agent.trajectory)
+        original_steps = list(agent_trajectory.steps)
+
+        real_tool_steps = 0
+        finish_only_steps = 0
+        other_action_steps = 0
+        for step in original_steps:
+            action_kind = self._classify_step_action(step)
+            if action_kind == "real_tool":
+                real_tool_steps += 1
+            elif action_kind == "finish_only":
+                finish_only_steps += 1
+            else:
+                other_action_steps += 1
+
+        original_num_steps = len(original_steps)
 
         # Filter out steps without tool calls if simple_tir is enabled
         if self.prediction_cfg.simple_tir:
-            original_steps = agent_trajectory.steps
             filtered_steps = [
                 step for step in original_steps if self._has_real_tool_call(step)
             ]
@@ -630,9 +672,28 @@ class PredictiveToolWorkflow(Workflow):
         # Add basic metrics
         episode.metrics = {
             "num_steps": len(agent_trajectory.steps),
+            "num_steps_before_filter": original_num_steps,
             "total_reward": total_reward,
             "prediction_enabled": self.prediction_cfg.enabled,
             "simple_tir": self.prediction_cfg.simple_tir,
+            "real_tool_steps": real_tool_steps,
+            "finish_only_steps": finish_only_steps,
+            "other_action_steps": other_action_steps,
+            "real_tool_step_ratio": (
+                real_tool_steps / original_num_steps if original_num_steps > 0 else 0.0
+            ),
+            "finish_only_step_ratio": (
+                finish_only_steps / original_num_steps
+                if original_num_steps > 0
+                else 0.0
+            ),
+            "other_action_step_ratio": (
+                other_action_steps / original_num_steps
+                if original_num_steps > 0
+                else 0.0
+            ),
+            "has_any_real_tool_step": float(real_tool_steps > 0),
+            "has_any_finish_only_step": float(finish_only_steps > 0),
         }
 
         self._save_episode_log(episode, uid, termination_reason)
