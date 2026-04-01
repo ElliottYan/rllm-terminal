@@ -476,6 +476,50 @@ def test_post_action_simulator_keeps_auxiliary_turns_out_of_live_context_by_defa
     assert episode.metrics["simulation_present_rate"] == 1.0
 
 
+def test_pre_action_imagine_then_revise_stores_imagine_record_and_keeps_it_out_of_live_context():
+    imagine_text = "Reasoning.\n<imagine>4</imagine>"
+    finalize_text = "Reasoning.\n<prediction>6</prediction>\nTOOL_ALT:print(3 + 3)"
+    episode, workflow, rollout_engine = _run_workflow(
+        responses=["TOOL:print(2 + 2)", imagine_text, finalize_text, "FINAL 6"],
+        generative_support_cfg={
+            "mode": "pre_action_imagine_then_revise",
+            "enable_prediction": True,
+            "add_to_live_messages": False,
+            "add_to_step_chat_completions": True,
+        },
+    )
+
+    assert [call["application_id"] for call in rollout_engine.calls] == [
+        "task-0:cand:0",
+        "task-0:imagine:0",
+        "task-0:final:0",
+        "task-0:cand:1",
+    ]
+
+    first_step = episode.trajectories[0].steps[0]
+    imagine_record = first_step.info[PredictiveToolAgent.INFO_KEY_IMAGINE]
+    assert imagine_record["prediction"] == "4"
+    assert "IMAGINE MODE" in imagine_record["prompt"]
+    assert first_step.info[PredictiveToolAgent.INFO_KEY_ACTION_REVISED] is True
+    assert first_step.info[PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT] == "6"
+    assert episode.metrics["mode_is_pre_action_imagine_then_revise"] == 1.0
+    assert episode.metrics["imagine_present_rate"] == 1.0
+    assert episode.info["generative_support_mode"] == "pre_action_imagine_then_revise"
+
+    second_candidate_call = next(
+        call for call in rollout_engine.calls if call["application_id"] == "task-0:cand:1"
+    )
+    assert not any(
+        "IMAGINE MODE" in message.get("content", "")
+        for message in second_candidate_call["messages"]
+    )
+    assert not any(
+        "IMAGINED_CANDIDATE_OUTPUT" in message.get("content", "")
+        for message in second_candidate_call["messages"]
+    )
+    assert not any("IMAGINE MODE" in message.get("content", "") for message in workflow.agent.messages)
+
+
 def test_finish_only_action_does_not_trigger_new_generative_support():
     episode, _workflow, rollout_engine = _run_workflow(
         responses=["FINAL 4"],

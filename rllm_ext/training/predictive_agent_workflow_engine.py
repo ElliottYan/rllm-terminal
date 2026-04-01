@@ -150,6 +150,44 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
         }
 
     @staticmethod
+    def _build_imagine_loss_example(step) -> dict | None:
+        """
+        Build one supervised imagine example from a rollout step.
+
+        Scheme C uses the actual env output as supervision for the imagine stage.
+        """
+        step_info = step.info if isinstance(step.info, dict) else {}
+        imagine_record = step_info.get(PredictiveToolAgent.INFO_KEY_IMAGINE)
+        if not isinstance(imagine_record, dict):
+            return None
+
+        imagine_prompt = imagine_record.get("prompt")
+        if not isinstance(imagine_prompt, str) or not imagine_prompt.strip():
+            return None
+
+        actual_output = PredictiveAgentWorkflowEngine._extract_actual_output(step).strip()
+        if not actual_output:
+            return None
+
+        raw_messages = (
+            copy.deepcopy(step.chat_completions)
+            if isinstance(step.chat_completions, list)
+            else []
+        )
+        prompt_messages = PredictiveAgentWorkflowEngine._strip_auxiliary_transcript(
+            raw_messages
+        )
+        prompt_messages.append({"role": "user", "content": imagine_prompt})
+
+        return {
+            "prompt_messages": prompt_messages,
+            "target_text": f"<imagine>{actual_output}</imagine>",
+            "actual": actual_output,
+            "prediction_prompt": imagine_prompt,
+            "kind": "imagine",
+        }
+
+    @staticmethod
     def _messages_contain_prediction_turns(messages) -> bool:
         return any(
             isinstance(message, dict) and message.get("rllm_prediction", False)
@@ -161,7 +199,7 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
         if not isinstance(text, str) or not text:
             return ""
         stripped = text
-        for tag in ("simulation", "prediction"):
+        for tag in ("simulation", "prediction", "imagine"):
             while True:
                 begin = f"<{tag}>"
                 end = f"</{tag}>"
@@ -188,10 +226,15 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                 and (
                     next_message.get("rllm_prediction")
                     or next_message.get("rllm_simulation")
+                    or next_message.get("rllm_imagine")
                 )
             ):
                 continue
-            if message.get("rllm_prediction") or message.get("rllm_simulation"):
+            if (
+                message.get("rllm_prediction")
+                or message.get("rllm_simulation")
+                or message.get("rllm_imagine")
+            ):
                 continue
             normalized = copy.deepcopy(message)
             if normalized.get("role") == "assistant":
@@ -225,7 +268,10 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
 
         for i in range(first_assistant_idx, len(messages)):
             is_asst = messages[i]["role"] == "assistant"
-            is_prediction = is_asst and messages[i].get("rllm_prediction", False)
+            is_prediction = is_asst and (
+                messages[i].get("rllm_prediction", False)
+                or messages[i].get("rllm_imagine", False)
+            )
 
             if is_asst:
                 response = chat_parser.parse(
@@ -290,10 +336,18 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                             }
                         else:
                             pred_mask = torch.zeros(0, dtype=torch.long)
-                            example = self._build_prediction_loss_example(step)
+                            examples = []
+                            imagine_example = self._build_imagine_loss_example(step)
+                            if imagine_example is not None:
+                                examples.append(imagine_example)
+                            prediction_example = self._build_prediction_loss_example(
+                                step
+                            )
+                            if prediction_example is not None:
+                                examples.append(prediction_example)
                             prediction_target = {
-                                "examples": [example] if example is not None else [],
-                                "has_prediction_target": example is not None,
+                                "examples": examples,
+                                "has_prediction_target": bool(examples),
                             }
                         prediction_masks.append(pred_mask)
                         prediction_targets.append(prediction_target)
@@ -315,9 +369,16 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                             pred_mask = torch.zeros(0, dtype=torch.long)
                             trajectory_examples = []
                             for step in trajectory.steps:
-                                example = self._build_prediction_loss_example(step)
-                                if example is not None:
-                                    trajectory_examples.append(example)
+                                imagine_example = self._build_imagine_loss_example(
+                                    step
+                                )
+                                if imagine_example is not None:
+                                    trajectory_examples.append(imagine_example)
+                                prediction_example = (
+                                    self._build_prediction_loss_example(step)
+                                )
+                                if prediction_example is not None:
+                                    trajectory_examples.append(prediction_example)
                             prediction_target = {
                                 "examples": trajectory_examples,
                                 "has_prediction_target": bool(trajectory_examples),
@@ -340,13 +401,21 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                             )
                         else:
                             prediction_masks.append(torch.zeros(0, dtype=torch.long))
-                            example = self._build_prediction_loss_example(
+                            examples = []
+                            imagine_example = self._build_imagine_loss_example(
                                 trajectory.steps[0]
                             )
+                            if imagine_example is not None:
+                                examples.append(imagine_example)
+                            prediction_example = self._build_prediction_loss_example(
+                                trajectory.steps[0]
+                            )
+                            if prediction_example is not None:
+                                examples.append(prediction_example)
                             prediction_targets.append(
                                 {
-                                    "examples": [example] if example is not None else [],
-                                    "has_prediction_target": example is not None,
+                                    "examples": examples,
+                                    "has_prediction_target": bool(examples),
                                 }
                             )
 

@@ -218,6 +218,30 @@ def test_build_prediction_loss_example_strips_auxiliary_tags_from_pre_action_fin
     assert example["prompt_messages"][-1]["content"] == "PREDICTION PROMPT"
 
 
+def test_build_imagine_loss_example_uses_actual_output_as_target():
+    step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "TOOL:print(2 + 2)"},
+        ],
+        info={
+            PredictiveToolAgent.INFO_KEY_IMAGINE: {
+                "prompt": "IMAGINE PROMPT",
+                "prediction": "4",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT: "6",
+        },
+    )
+
+    example = PredictiveAgentWorkflowEngine._build_imagine_loss_example(step)
+
+    assert example["target_text"] == "<imagine>6</imagine>"
+    assert example["prompt_messages"][-1]["content"] == "IMAGINE PROMPT"
+    assert example["kind"] == "imagine"
+
+
 def test_transform_results_for_verl_adds_prediction_mask_and_adjusts_response_mask(
     monkeypatch,
 ):
@@ -380,3 +404,62 @@ def test_transform_results_for_verl_non_cumulative_trajectory_falls_back_to_pred
     assert prediction_target["has_prediction_target"] is True
     assert len(prediction_target["examples"]) == 1
     assert prediction_target["examples"][0]["target_text"] == "<prediction>4</prediction>"
+
+
+def test_transform_results_for_verl_collects_imagine_and_prediction_examples(
+    monkeypatch,
+):
+    engine = PredictiveAgentWorkflowEngine.__new__(PredictiveAgentWorkflowEngine)
+    engine.config = SimpleNamespace(
+        rllm=SimpleNamespace(stepwise_advantage=SimpleNamespace(enable=False)),
+        data=SimpleNamespace(max_response_length=64),
+    )
+    engine.rollout_engine = SimpleNamespace(chat_parser=_DummyChatParser())
+
+    class _DummyBatch:
+        def __init__(self):
+            self.batch = {
+                "response_mask": torch.ones((1, 64), dtype=torch.long),
+            }
+            self.non_tensor_batch = {
+                "step_ids": np.array(["task0_agent"], dtype=object)
+            }
+
+    monkeypatch.setattr(
+        AgentWorkflowEngine,
+        "transform_results_for_verl",
+        lambda self, episodes, task_ids: _DummyBatch(),
+    )
+
+    step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "TOOL_ALT:print(3 + 3)"},
+        ],
+        info={
+            PredictiveToolAgent.INFO_KEY_IMAGINE: {
+                "prompt": "IMAGINE PROMPT",
+                "prediction": "4",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_PREDICTION: {
+                "prompt": "PREDICTION PROMPT",
+                "prediction": "",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT: "6",
+        },
+    )
+    episode = Episode(trajectories=[Trajectory(steps=[step])])
+
+    batch = engine.transform_results_for_verl(
+        [episode], np.array(["task0"], dtype=object)
+    )
+
+    prediction_target = batch.non_tensor_batch["prediction_targets"][0]
+    assert prediction_target["has_prediction_target"] is True
+    assert [example["target_text"] for example in prediction_target["examples"]] == [
+        "<imagine>6</imagine>",
+        "<prediction>6</prediction>",
+    ]

@@ -28,6 +28,7 @@ class PredictiveToolAgent(ToolAgent):
 
     # Namespaced keys to avoid collisions with existing code
     INFO_KEY_PREDICTION = "rllm_ext.prediction"
+    INFO_KEY_IMAGINE = "rllm_ext.imagine"
     INFO_KEY_GENERATIVE_SUPPORT = "rllm_ext.generative_support"
     INFO_KEY_CANDIDATE_ACTION = "rllm_ext.candidate_action"
     INFO_KEY_FINAL_ACTION = "rllm_ext.final_action"
@@ -46,6 +47,21 @@ class PredictiveToolAgent(ToolAgent):
         if step.info is None:
             step.info = {}
         step.info[self.INFO_KEY_PREDICTION] = {
+            "prompt": prediction.prompt,
+            "prediction": prediction.prediction,
+            "metadata": prediction.metadata or {},
+        }
+
+    def set_step_imagine(self, *, prediction: PredictionRecord) -> None:
+        """
+        Attach the imagine record to the current trajectory step (latest step).
+        """
+        step = self.get_current_state()
+        if step is None:
+            return
+        if step.info is None:
+            step.info = {}
+        step.info[self.INFO_KEY_IMAGINE] = {
             "prompt": prediction.prompt,
             "prediction": prediction.prediction,
             "metadata": prediction.metadata or {},

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 GenerativeSupportMode = Literal[
     "none",
     "pre_action_world_model",
+    "pre_action_imagine_then_revise",
     "post_action_simulator",
 ]
 
@@ -83,6 +84,7 @@ class PredictiveToolWorkflow(Workflow):
     Supported per-step flows:
     - baseline: ``action -> prediction -> env`` (``mode="none"``)
     - scheme A: ``candidate -> finalize(action+prediction) -> env``
+    - scheme C: ``candidate -> imagine -> finalize(action+prediction) -> env``
     - scheme B: ``action -> simulator -> prediction -> env``
     """
 
@@ -384,6 +386,47 @@ class PredictiveToolWorkflow(Workflow):
             + "Final tool call.\n"
         )
 
+    def _build_imagine_prompt(self, candidate_action: Any) -> str:
+        return (
+            "You are now in IMAGINE MODE.\n"
+            "The candidate action is not final yet. Do not revise it.\n"
+            "Predict the most likely short tool output this candidate action would produce.\n\n"
+            + self._build_json_prompt_block(
+                "CANDIDATE_ACTION_JSON", candidate_action
+            )
+            + "Respond in this format:\n"
+            "Optional reasoning.\n"
+            "<imagine>short likely tool output</imagine>\n"
+        )
+
+    def _build_finalize_from_imagine_prompt(
+        self, candidate_action: Any, imagine_text: str
+    ) -> str:
+        prediction_line = (
+            "You may also output a short <prediction>...</prediction> block for the final action.\n"
+            if self.generative_support_cfg.enable_prediction
+            else ""
+        )
+        return (
+            "You are revising a candidate tool action before execution.\n"
+            "You are given a candidate action and an imagined candidate output.\n"
+            "Use the imagined output to decide whether to keep or revise the action.\n"
+            + prediction_line
+            + "Finally output the tool call that should actually be executed.\n\n"
+            + self._build_json_prompt_block(
+                "CANDIDATE_ACTION_JSON", candidate_action
+            )
+            + f"IMAGINED_CANDIDATE_OUTPUT:\n{imagine_text}\n\n"
+            + "Required structure:\n"
+            + "Optional reasoning.\n"
+            + (
+                "<prediction>short tool output prediction</prediction>\n"
+                if self.generative_support_cfg.enable_prediction
+                else ""
+            )
+            + "Final tool call.\n"
+        )
+
     def _build_simulator_prompt(self, action_obj: Any) -> Optional[str]:
         if not self._has_real_tool_call_payload(action_obj):
             return None
@@ -428,7 +471,7 @@ class PredictiveToolWorkflow(Workflow):
         if not isinstance(text, str) or not text:
             return ""
         stripped = text
-        for tag in ("simulation", "prediction"):
+        for tag in ("simulation", "prediction", "imagine"):
             stripped = re.sub(
                 rf"<{tag}>.*?</{tag}>",
                 "",
@@ -750,6 +793,178 @@ class PredictiveToolWorkflow(Workflow):
                             finalize_response, "prediction"
                         ),
                         "mode": "pre_action_world_model",
+                    },
+                )
+            )
+
+        live_content = (
+            finalize_response
+            if self.generative_support_cfg.add_to_live_messages
+            else self._strip_auxiliary_tags(finalize_response)
+        )
+        keep_full_step_text = (
+            self.generative_support_cfg.add_to_step_chat_completions
+            and self.generative_support_cfg.train_generative_with_ppo
+        )
+        step_content = (
+            finalize_response
+            if keep_full_step_text
+            else self._strip_auxiliary_tags(finalize_response)
+        )
+        self._patch_latest_assistant_message(
+            tool_calls=executed_action,
+            live_content=live_content,
+            step_content=step_content,
+        )
+
+        prediction_payload = self._build_prediction_payload(
+            prompt=prediction_prompt,
+            prediction_text=final_prediction,
+            raw_text=finalize_response,
+        )
+        return {
+            **committed,
+            "action": executed_action,
+            "env_action": executed_action,
+            "prediction_payload": prediction_payload,
+        }
+
+    async def _run_pre_action_imagine_then_revise_step(
+        self,
+        *,
+        uid: str,
+        step_idx: int,
+        model_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        candidate_output: ModelOutput = await self.rollout_engine.get_model_response(
+            self.agent.chat_completions,
+            application_id=f"{uid}:cand:{step_idx}",
+            enforce_max_prompt_length=self.generative_support_cfg.enforce_max_prompt_length,
+            **model_kwargs,
+        )
+        candidate_response = candidate_output.text or ""
+        candidate_action = self._parse_tool_calls_from_response(candidate_response)
+        candidate_has_real_tool = self._has_real_tool_call_payload(candidate_action)
+
+        if not candidate_has_real_tool:
+            committed = self._build_action_first_step(
+                response=candidate_response,
+                output=candidate_output,
+            )
+            return {
+                **committed,
+                "env_action": committed["action"],
+            }
+
+        imagine_prompt = self._build_imagine_prompt(candidate_action)
+        imagine_messages = copy.deepcopy(self.agent.chat_completions)
+        imagine_messages.append({"role": "user", "content": imagine_prompt})
+        imagine_output: ModelOutput = await self.rollout_engine.get_model_response(
+            imagine_messages,
+            application_id=f"{uid}:imagine:{step_idx}",
+            enforce_max_prompt_length=self.generative_support_cfg.enforce_max_prompt_length,
+            max_tokens=self.generative_support_cfg.max_tokens,
+            **model_kwargs,
+        )
+        imagine_response = imagine_output.text or ""
+        imagine_prediction = self._extract_tagged_block(imagine_response, "imagine") or ""
+
+        finalize_prompt = self._build_finalize_from_imagine_prompt(
+            candidate_action, imagine_response
+        )
+        finalize_messages = copy.deepcopy(self.agent.chat_completions)
+        finalize_messages.append({"role": "user", "content": finalize_prompt})
+
+        finalize_output: ModelOutput = await self.rollout_engine.get_model_response(
+            finalize_messages,
+            application_id=f"{uid}:final:{step_idx}",
+            enforce_max_prompt_length=self.generative_support_cfg.enforce_max_prompt_length,
+            max_tokens=self.generative_support_cfg.max_tokens,
+            **model_kwargs,
+        )
+        finalize_response = finalize_output.text or ""
+        parsed_final_action = self._parse_tool_calls_from_response(finalize_response)
+        final_has_real_tool = self._has_real_tool_call_payload(parsed_final_action)
+
+        executed_action = (
+            parsed_final_action if final_has_real_tool else copy.deepcopy(candidate_action)
+        )
+        action_revised = final_has_real_tool and not self._actions_match(
+            candidate_action, parsed_final_action
+        )
+        final_prediction = (
+            self._extract_tagged_block(finalize_response, "prediction") or ""
+        )
+        if not final_has_real_tool:
+            final_prediction = ""
+
+        prediction_prompt = (
+            self._build_prediction_prompt(executed_action)
+            if self.generative_support_cfg.enable_prediction
+            else None
+        )
+
+        committed = self._build_action_first_step(
+            response=finalize_response,
+            output=finalize_output,
+        )
+        cur_step = committed["step"]
+        if cur_step is not None:
+            cur_step.action = copy.deepcopy(executed_action)
+            cur_step.info[PredictiveToolAgent.INFO_KEY_CANDIDATE_ACTION] = copy.deepcopy(
+                candidate_action
+            )
+            cur_step.info[PredictiveToolAgent.INFO_KEY_FINAL_ACTION] = copy.deepcopy(
+                executed_action
+            )
+            cur_step.info[PredictiveToolAgent.INFO_KEY_ACTION_REVISED] = bool(
+                action_revised
+            )
+
+        self.agent.set_step_imagine(
+            prediction=PredictionRecord(
+                prompt=imagine_prompt,
+                prediction=imagine_prediction,
+                metadata={
+                    "step_idx": step_idx,
+                    "raw_text": imagine_response,
+                    "reasoning": self._extract_reasoning_prefix(
+                        imagine_response, "imagine"
+                    ),
+                    "mode": "pre_action_imagine_then_revise",
+                },
+            )
+        )
+
+        self.agent.set_step_generative_support(
+            mode="pre_action_imagine_then_revise",
+            prompt=finalize_prompt,
+            text=finalize_response,
+            metadata={
+                "step_idx": step_idx,
+                "candidate_has_real_tool": True,
+                "final_tool_call_present": final_has_real_tool,
+                "candidate_final_action_match": self._actions_match(
+                    candidate_action, executed_action
+                ),
+                "imagine_prompt": imagine_prompt,
+                "imagine_text": imagine_response,
+                "imagine_prediction": imagine_prediction,
+            },
+        )
+
+        if prediction_prompt is not None:
+            self.agent.set_step_prediction(
+                prediction=PredictionRecord(
+                    prompt=prediction_prompt,
+                    prediction=final_prediction,
+                    metadata={
+                        "step_idx": step_idx,
+                        "raw_text": finalize_response,
+                        "reasoning": self._extract_reasoning_prefix(
+                            finalize_response, "prediction"
+                        ),
+                        "mode": "pre_action_imagine_then_revise",
                     },
                 )
             )
@@ -1159,6 +1374,12 @@ class PredictiveToolWorkflow(Workflow):
                     step_idx=step_idx,
                     model_kwargs=kwargs,
                 )
+            elif self.generative_support_cfg.mode == "pre_action_imagine_then_revise":
+                committed_result = await self._run_pre_action_imagine_then_revise_step(
+                    uid=uid,
+                    step_idx=step_idx,
+                    model_kwargs=kwargs,
+                )
             else:
                 action_output: ModelOutput = await self.rollout_engine.get_model_response(
                     self.agent.chat_completions,
@@ -1271,6 +1492,7 @@ class PredictiveToolWorkflow(Workflow):
         action_revised_steps = 0
         candidate_real_tool_steps = 0
         prediction_present_steps = 0
+        imagine_present_steps = 0
         simulation_present_steps = 0
 
         for step in original_steps:
@@ -1295,6 +1517,10 @@ class PredictiveToolWorkflow(Workflow):
                 "prediction"
             ):
                 prediction_present_steps += 1
+
+            imagine_record = step_info.get(PredictiveToolAgent.INFO_KEY_IMAGINE)
+            if isinstance(imagine_record, dict) and imagine_record.get("prediction"):
+                imagine_present_steps += 1
 
             generative_record = step_info.get(
                 PredictiveToolAgent.INFO_KEY_GENERATIVE_SUPPORT
@@ -1330,6 +1556,9 @@ class PredictiveToolWorkflow(Workflow):
         prediction_present_rate = (
             prediction_present_steps / real_tool_steps if real_tool_steps > 0 else 0.0
         )
+        imagine_present_rate = (
+            imagine_present_steps / real_tool_steps if real_tool_steps > 0 else 0.0
+        )
         candidate_real_tool_rate = (
             candidate_real_tool_steps / original_num_steps
             if original_num_steps > 0
@@ -1350,6 +1579,8 @@ class PredictiveToolWorkflow(Workflow):
             "candidate_real_tool_rate": candidate_real_tool_rate,
             "prediction_present_steps": prediction_present_steps,
             "prediction_present_rate": prediction_present_rate,
+            "imagine_present_steps": imagine_present_steps,
+            "imagine_present_rate": imagine_present_rate,
             "simulation_present_steps": simulation_present_steps,
             "real_tool_step_ratio": (
                 real_tool_steps / original_num_steps if original_num_steps > 0 else 0.0
@@ -1376,6 +1607,9 @@ class PredictiveToolWorkflow(Workflow):
             "mode_is_none": float(active_mode == "none"),
             "mode_is_pre_action_world_model": float(
                 active_mode == "pre_action_world_model"
+            ),
+            "mode_is_pre_action_imagine_then_revise": float(
+                active_mode == "pre_action_imagine_then_revise"
             ),
             "mode_is_post_action_simulator": float(
                 active_mode == "post_action_simulator"
