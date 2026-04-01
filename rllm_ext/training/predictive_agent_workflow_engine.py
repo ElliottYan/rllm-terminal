@@ -99,18 +99,31 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
         if not actual_output:
             return None
 
-        prompt_messages = (
+        raw_messages = (
             copy.deepcopy(step.chat_completions)
             if isinstance(step.chat_completions, list)
             else []
         )
+        prompt_messages = PredictiveAgentWorkflowEngine._strip_auxiliary_transcript(
+            raw_messages
+        )
 
-        if (
-            prompt_messages
-            and isinstance(prompt_messages[-1], dict)
-            and prompt_messages[-1].get("role") == "assistant"
-        ):
-            prompt_messages = prompt_messages[:-1]
+        generative_record = step_info.get(
+            PredictiveToolAgent.INFO_KEY_GENERATIVE_SUPPORT, {}
+        )
+        generative_mode = (
+            generative_record.get("mode", "none")
+            if isinstance(generative_record, dict)
+            else "none"
+        )
+        generative_prompt = (
+            generative_record.get("prompt", "")
+            if isinstance(generative_record, dict)
+            else ""
+        )
+        generative_text = (
+            generative_record.get("text", "") if isinstance(generative_record, dict) else ""
+        )
 
         if (
             not prompt_messages
@@ -118,6 +131,15 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
             or prompt_messages[-1].get("role") != "user"
             or prompt_messages[-1].get("content") != prediction_prompt
         ):
+            if (
+                generative_mode == "post_action_simulator"
+                and isinstance(generative_prompt, str)
+                and generative_prompt.strip()
+                and isinstance(generative_text, str)
+                and generative_text.strip()
+            ):
+                prompt_messages.append({"role": "user", "content": generative_prompt})
+                prompt_messages.append({"role": "assistant", "content": generative_text})
             prompt_messages.append({"role": "user", "content": prediction_prompt})
 
         return {
@@ -133,6 +155,51 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
             isinstance(message, dict) and message.get("rllm_prediction", False)
             for message in messages or []
         )
+
+    @staticmethod
+    def _strip_auxiliary_tags(text: str) -> str:
+        if not isinstance(text, str) or not text:
+            return ""
+        stripped = text
+        for tag in ("simulation", "prediction"):
+            while True:
+                begin = f"<{tag}>"
+                end = f"</{tag}>"
+                start = stripped.find(begin)
+                if start == -1:
+                    break
+                stop = stripped.find(end, start + len(begin))
+                if stop == -1:
+                    break
+                stripped = stripped[:start] + stripped[stop + len(end) :]
+        return stripped.strip()
+
+    @classmethod
+    def _strip_auxiliary_transcript(cls, messages) -> list[dict]:
+        cleaned_messages = []
+        messages = list(messages or [])
+        for idx, message in enumerate(messages):
+            if not isinstance(message, dict):
+                continue
+            next_message = messages[idx + 1] if idx + 1 < len(messages) else None
+            if (
+                message.get("role") == "user"
+                and isinstance(next_message, dict)
+                and (
+                    next_message.get("rllm_prediction")
+                    or next_message.get("rllm_simulation")
+                )
+            ):
+                continue
+            if message.get("rllm_prediction") or message.get("rllm_simulation"):
+                continue
+            normalized = copy.deepcopy(message)
+            if normalized.get("role") == "assistant":
+                normalized["content"] = cls._strip_auxiliary_tags(
+                    normalized.get("content", "")
+                )
+            cleaned_messages.append(normalized)
+        return cleaned_messages
 
     @staticmethod
     def _compute_prediction_mask_cumulative(messages, chat_parser) -> torch.Tensor:
@@ -211,18 +278,32 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
 
                 if stepwise_enabled:
                     for step in trajectory.steps:
-                        prediction_masks.append(torch.zeros(0, dtype=torch.long))
-                        example = self._build_prediction_loss_example(step)
-                        prediction_targets.append(
-                            {
+                        if self._messages_contain_prediction_turns(
+                            step.chat_completions
+                        ):
+                            pred_mask = self._compute_prediction_mask_cumulative(
+                                step.chat_completions, chat_parser
+                            )
+                            prediction_target = {
+                                "examples": [],
+                                "has_prediction_target": False,
+                            }
+                        else:
+                            pred_mask = torch.zeros(0, dtype=torch.long)
+                            example = self._build_prediction_loss_example(step)
+                            prediction_target = {
                                 "examples": [example] if example is not None else [],
                                 "has_prediction_target": example is not None,
                             }
-                        )
+                        prediction_masks.append(pred_mask)
+                        prediction_targets.append(prediction_target)
                 else:
+                    trajectory_is_cumulative = (
+                        len(trajectory.steps) <= 1 or trajectory.is_cumulative()
+                    )
                     if len(trajectory.steps) > 1:
                         chat_completions = trajectory.steps[-1].chat_completions
-                        if self._messages_contain_prediction_turns(chat_completions):
+                        if trajectory_is_cumulative and self._messages_contain_prediction_turns(chat_completions):
                             pred_mask = self._compute_prediction_mask_cumulative(
                                 chat_completions, chat_parser
                             )
@@ -244,9 +325,13 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                         prediction_masks.append(pred_mask)
                         prediction_targets.append(prediction_target)
                     else:
-                        prediction_masks.append(torch.zeros(0, dtype=torch.long))
                         chat_completions = trajectory.steps[0].chat_completions
                         if self._messages_contain_prediction_turns(chat_completions):
+                            prediction_masks.append(
+                                self._compute_prediction_mask_cumulative(
+                                    chat_completions, chat_parser
+                                )
+                            )
                             prediction_targets.append(
                                 {
                                     "examples": [],
@@ -254,6 +339,7 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                                 }
                             )
                         else:
+                            prediction_masks.append(torch.zeros(0, dtype=torch.long))
                             example = self._build_prediction_loss_example(
                                 trajectory.steps[0]
                             )

@@ -28,6 +28,10 @@ class PredictiveToolAgent(ToolAgent):
 
     # Namespaced keys to avoid collisions with existing code
     INFO_KEY_PREDICTION = "rllm_ext.prediction"
+    INFO_KEY_GENERATIVE_SUPPORT = "rllm_ext.generative_support"
+    INFO_KEY_CANDIDATE_ACTION = "rllm_ext.candidate_action"
+    INFO_KEY_FINAL_ACTION = "rllm_ext.final_action"
+    INFO_KEY_ACTION_REVISED = "rllm_ext.action_revised"
     INFO_KEY_ACTUAL_OUTPUT = "rllm_ext.actual_output"
     INFO_KEY_ACTUAL_TOOL_OUTPUTS = "rllm_ext.actual_tool_outputs"
 
@@ -45,4 +49,25 @@ class PredictiveToolAgent(ToolAgent):
             "prompt": prediction.prompt,
             "prediction": prediction.prediction,
             "metadata": prediction.metadata or {},
+        }
+
+    def set_step_generative_support(
+        self,
+        *,
+        mode: str,
+        prompt: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Attach one structured generative-support record to the current step."""
+        step = self.get_current_state()
+        if step is None:
+            return
+        if step.info is None:
+            step.info = {}
+        step.info[self.INFO_KEY_GENERATIVE_SUPPORT] = {
+            "mode": mode,
+            "prompt": prompt,
+            "text": text,
+            "metadata": metadata or {},
         }

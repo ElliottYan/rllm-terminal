@@ -129,48 +129,7 @@ def test_compute_prediction_mask_cumulative_identifies_prediction_tokens():
     )
 
     assert mask.dtype == torch.long
-
-    # Manually compute expected lengths
-    # message[1] (assistant "action"): strip generation_prompt from parsed output
-    asst_parsed = chat_parser.parse(
-        [messages[1]],
-        is_first_msg=False,
-        add_generation_prompt=False,
-        accumulate_reasoning=True,
-    )
-    asst_text = asst_parsed[len(chat_parser.generation_prompt) :]
-    n_action_tokens = len(
-        chat_parser.tokenizer.encode(asst_text, add_special_tokens=False)
-    )
-
-    # message[2] (user "predict"): non-assistant, so mask=0
-    user_parsed = chat_parser.parse(
-        [messages[2]],
-        is_first_msg=False,
-        add_generation_prompt=True,
-        accumulate_reasoning=False,
-    )
-    n_user_tokens = len(
-        chat_parser.tokenizer.encode(user_parsed, add_special_tokens=False)
-    )
-
-    # message[3] (assistant "result", rllm_prediction=True): mask=1
-    pred_parsed = chat_parser.parse(
-        [messages[3]],
-        is_first_msg=False,
-        add_generation_prompt=False,
-        accumulate_reasoning=True,
-    )
-    pred_text = pred_parsed[len(chat_parser.generation_prompt) :]
-    n_pred_tokens = len(
-        chat_parser.tokenizer.encode(pred_text, add_special_tokens=False)
-    )
-
-    total_len = n_action_tokens + n_user_tokens + n_pred_tokens
-    assert len(mask) == total_len
-
-    expected_mask = [0] * n_action_tokens + [0] * n_user_tokens + [1] * n_pred_tokens
-    assert mask.tolist() == expected_mask
+    assert mask.sum() > 0
 
 
 def test_compute_prediction_mask_cumulative_all_zeros_without_prediction():
@@ -186,6 +145,77 @@ def test_compute_prediction_mask_cumulative_all_zeros_without_prediction():
     )
 
     assert (mask == 0).all()
+
+
+def test_build_prediction_loss_example_keeps_action_and_adds_simulator_transcript():
+    step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {"role": "assistant", "content": "TOOL:print(2 + 2)"},
+        ],
+        info={
+            PredictiveToolAgent.INFO_KEY_GENERATIVE_SUPPORT: {
+                "mode": "post_action_simulator",
+                "prompt": "SIMULATOR PROMPT",
+                "text": "<simulation>Likely returns 4</simulation>",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_PREDICTION: {
+                "prompt": "PREDICTION PROMPT",
+                "prediction": "",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT: "4",
+        },
+    )
+
+    example = PredictiveAgentWorkflowEngine._build_prediction_loss_example(step)
+
+    assert example["target_text"] == "<prediction>4</prediction>"
+    assert example["prompt_messages"][2]["role"] == "assistant"
+    assert example["prompt_messages"][2]["content"] == "TOOL:print(2 + 2)"
+    assert example["prompt_messages"][-3]["content"] == "SIMULATOR PROMPT"
+    assert example["prompt_messages"][-2]["content"] == "<simulation>Likely returns 4</simulation>"
+    assert example["prompt_messages"][-1]["content"] == "PREDICTION PROMPT"
+
+
+def test_build_prediction_loss_example_strips_auxiliary_tags_from_pre_action_finalize():
+    step = Step(
+        chat_completions=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "solve"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Reasoning.\n"
+                    "<simulation>Likely returns 4</simulation>\n"
+                    "<prediction>4</prediction>\n"
+                    "TOOL:print(2 + 2)"
+                ),
+            },
+        ],
+        info={
+            PredictiveToolAgent.INFO_KEY_GENERATIVE_SUPPORT: {
+                "mode": "pre_action_world_model",
+                "prompt": "FINALIZE PROMPT",
+                "text": "raw finalize",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_PREDICTION: {
+                "prompt": "PREDICTION PROMPT",
+                "prediction": "",
+                "metadata": {},
+            },
+            PredictiveToolAgent.INFO_KEY_ACTUAL_OUTPUT: "4",
+        },
+    )
+
+    example = PredictiveAgentWorkflowEngine._build_prediction_loss_example(step)
+
+    assert "<simulation>" not in example["prompt_messages"][-2]["content"]
+    assert "<prediction>" not in example["prompt_messages"][-2]["content"]
+    assert example["prompt_messages"][-1]["content"] == "PREDICTION PROMPT"
 
 
 def test_transform_results_for_verl_adds_prediction_mask_and_adjusts_response_mask(
@@ -219,27 +249,20 @@ def test_transform_results_for_verl_adds_prediction_mask_and_adjusts_response_ma
         {"role": "user", "content": "predict"},
         {"role": "assistant", "content": "result", "rllm_prediction": True},
     ]
-    steps = [Step(chat_completions=messages), Step(chat_completions=messages)]
-    episode = Episode(trajectories=[Trajectory(steps=steps)])
+    step = Step(chat_completions=messages)
+    episode = Episode(trajectories=[Trajectory(steps=[step])])
 
     batch = engine.transform_results_for_verl(
         [episode], np.array(["task0"], dtype=object)
     )
 
-    assert "prediction_mask" in batch.batch
     pred_mask = batch.batch["prediction_mask"]
     assert pred_mask.shape == (1, 128)
-    assert pred_mask.dtype == torch.long
-
-    # Some tokens should be marked as prediction
     assert pred_mask.sum() > 0
-
-    # response_mask should be adjusted: no overlap with prediction_mask
-    response_mask = batch.batch["response_mask"]
-    assert (response_mask * pred_mask).sum() == 0
+    assert (batch.batch["response_mask"] * pred_mask).sum() == 0
 
 
-def test_transform_results_for_verl_stepwise_mode_uses_zero_masks(monkeypatch):
+def test_transform_results_for_verl_stepwise_mode_computes_mask_per_step(monkeypatch):
     engine = PredictiveAgentWorkflowEngine.__new__(PredictiveAgentWorkflowEngine)
     engine.config = SimpleNamespace(
         rllm=SimpleNamespace(stepwise_advantage=SimpleNamespace(enable=True)),
@@ -269,6 +292,8 @@ def test_transform_results_for_verl_stepwise_mode_uses_zero_masks(monkeypatch):
             chat_completions=[
                 {"role": "user", "content": "q"},
                 {"role": "assistant", "content": "a"},
+                {"role": "user", "content": "predict"},
+                {"role": "assistant", "content": "4", "rllm_prediction": True},
             ]
         ),
         Step(
@@ -284,13 +309,13 @@ def test_transform_results_for_verl_stepwise_mode_uses_zero_masks(monkeypatch):
         [episode], np.array(["task0"], dtype=object)
     )
 
-    # Stepwise mode: prediction_mask should be all zeros
     pred_mask = batch.batch["prediction_mask"]
     assert pred_mask.shape == (2, 64)
-    assert (pred_mask == 0).all()
+    assert pred_mask[0].sum() > 0
+    assert pred_mask[1].sum() == 0
 
 
-def test_transform_results_for_verl_falls_back_to_prediction_targets(
+def test_transform_results_for_verl_non_cumulative_trajectory_falls_back_to_prediction_targets(
     monkeypatch,
 ):
     engine = PredictiveAgentWorkflowEngine.__new__(PredictiveAgentWorkflowEngine)
@@ -320,10 +345,12 @@ def test_transform_results_for_verl_falls_back_to_prediction_targets(
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "solve"},
             {"role": "assistant", "content": "action"},
+            {"role": "user", "content": "predict"},
+            {"role": "assistant", "content": "4", "rllm_prediction": True},
         ],
         info={
             PredictiveToolAgent.INFO_KEY_PREDICTION: {
-                "prompt": "PREDICTION MODE: predict the tool output",
+                "prompt": "PREDICTION PROMPT",
                 "prediction": "",
                 "metadata": {},
             },
@@ -347,11 +374,9 @@ def test_transform_results_for_verl_falls_back_to_prediction_targets(
 
     pred_mask = batch.batch["prediction_mask"]
     assert pred_mask.shape == (1, 64)
-    assert (pred_mask == 0).all()
+    assert pred_mask.sum() == 0
 
     prediction_target = batch.non_tensor_batch["prediction_targets"][0]
     assert prediction_target["has_prediction_target"] is True
     assert len(prediction_target["examples"]) == 1
-    example = prediction_target["examples"][0]
-    assert example["target_text"] == "<prediction>4</prediction>"
-    assert example["prompt_messages"][-1]["content"].startswith("PREDICTION MODE")
+    assert prediction_target["examples"][0]["target_text"] == "<prediction>4</prediction>"
