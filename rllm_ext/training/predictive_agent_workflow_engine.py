@@ -190,9 +190,44 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
     @staticmethod
     def _messages_contain_prediction_turns(messages) -> bool:
         return any(
-            isinstance(message, dict) and message.get("rllm_prediction", False)
+            isinstance(message, dict)
+            and (
+                message.get("rllm_prediction", False)
+                or message.get("rllm_imagine", False)
+            )
             for message in messages or []
         )
+
+    @staticmethod
+    def _compute_prediction_mask_last_turn(messages, chat_parser) -> torch.Tensor:
+        """
+        Compute prediction mask for stepwise rows tokenized with tokenize_and_mask().
+
+        In stepwise mode, each row only trains on the last assistant turn.
+        """
+        try:
+            last_assistant_idx = max(
+                i for i, msg in enumerate(messages) if msg["role"] == "assistant"
+            )
+        except ValueError:
+            raise ValueError("No assistant message found in chat_completions") from None
+
+        last_message = messages[last_assistant_idx]
+        response = chat_parser.parse(
+            [last_message],
+            is_first_msg=False,
+            add_generation_prompt=False,
+            accumulate_reasoning=True,
+        )
+        response = response[len(chat_parser.generation_prompt) :].rstrip("\n")
+        ids = chat_parser.tokenizer.encode(response, add_special_tokens=False)
+
+        is_prediction = bool(
+            last_message.get("rllm_prediction", False)
+            or last_message.get("rllm_imagine", False)
+        )
+        fill_value = 1 if is_prediction else 0
+        return torch.full((len(ids),), fill_value, dtype=torch.long)
 
     @staticmethod
     def _strip_auxiliary_tags(text: str) -> str:
@@ -327,7 +362,7 @@ class PredictiveAgentWorkflowEngine(AgentWorkflowEngine):
                         if self._messages_contain_prediction_turns(
                             step.chat_completions
                         ):
-                            pred_mask = self._compute_prediction_mask_cumulative(
+                            pred_mask = self._compute_prediction_mask_last_turn(
                                 step.chat_completions, chat_parser
                             )
                             prediction_target = {

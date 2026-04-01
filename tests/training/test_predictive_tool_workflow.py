@@ -189,6 +189,103 @@ class _DummyPredictiveAgent(PredictiveToolAgent):
     def trajectory(self):
         return self._trajectory
 
+    def get_current_state(self):
+        if not self._trajectory.steps:
+            return None
+        return self._trajectory.steps[-1]
+
+    def get_current_state(self):
+        if not self._trajectory.steps:
+            return None
+        return self._trajectory.steps[-1]
+
+
+class _DummyPlainAgent:
+    def __init__(self, **kwargs):
+        self.system_prompt = "sys"
+        self.tool_parser = _DummyToolParser()
+        self._trajectory = Trajectory()
+        self.messages = []
+        self.current_observation = None
+        self.reset()
+
+    def _format_observation_as_messages(self, obs):
+        messages = []
+        if isinstance(obs, dict):
+            if "question" in obs:
+                messages.append({"role": "user", "content": obs["question"]})
+            elif "tool_outputs" in obs:
+                for tool_call_id, tool_output_str in obs["tool_outputs"].items():
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": tool_output_str,
+                            "tool_call_id": tool_call_id,
+                        }
+                    )
+        return messages
+
+    def update_from_env(self, observation, reward, done, info, **kwargs):
+        self.messages.extend(self._format_observation_as_messages(observation))
+        self.current_observation = observation
+
+    def update_from_model(self, response: str, **kwargs) -> Action:
+        step_idx = len(self._trajectory.steps)
+        parsed_tool_calls = self.tool_parser.parse(response)
+        if parsed_tool_calls:
+            tool_calls_dict = [
+                {
+                    "id": f"tool-{step_idx}-{idx}",
+                    "type": "function",
+                    "function": copy.deepcopy(tool_call),
+                }
+                for idx, tool_call in enumerate(parsed_tool_calls)
+            ]
+        else:
+            tool_calls_dict = [
+                {
+                    "id": f"finish-{step_idx}",
+                    "type": "function",
+                    "function": {
+                        "name": "finish",
+                        "arguments": {"response": response},
+                    },
+                }
+            ]
+
+        assistant_message = {"role": "assistant", "content": response}
+        if tool_calls_dict[0]["function"]["name"] != "finish":
+            assistant_message["tool_calls"] = copy.deepcopy(tool_calls_dict)
+        self.messages.append(assistant_message)
+
+        self._trajectory.steps.append(
+            Step(
+                chat_completions=copy.deepcopy(self.chat_completions),
+                action=copy.deepcopy(tool_calls_dict),
+                model_response=response,
+                observation=self.current_observation,
+            )
+        )
+        return Action(action=tool_calls_dict)
+
+    def reset(self):
+        self._trajectory = Trajectory()
+        self.messages = [{"role": "system", "content": self.system_prompt}]
+        self.current_observation = None
+
+    @property
+    def chat_completions(self):
+        return self.messages
+
+    @property
+    def trajectory(self):
+        return self._trajectory
+
+    def get_current_state(self):
+        if not self._trajectory.steps:
+            return None
+        return self._trajectory.steps[-1]
+
 
 class _DummyEnv:
     def __init__(self, **kwargs):
@@ -363,6 +460,22 @@ def test_legacy_prediction_step_inherits_prompt_length_enforcement_setting():
     assert pred_call["enforce_max_prompt_length"] is False
 
 
+def test_legacy_prediction_disabled_allows_non_predictive_agent():
+    rollout_engine = _DummyRolloutEngine(["TOOL:print(2 + 2)", "FINAL 4"])
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        workflow = PredictiveToolWorkflow(
+            agent_cls=_DummyPlainAgent,
+            env_cls=_DummyEnv,
+            max_steps=4,
+            prediction_cfg={"enabled": False},
+            rollout_engine=rollout_engine,
+            executor=executor,
+        )
+        episode = asyncio.run(workflow.run(task={"question": "What is 2 + 2?"}, uid="task-plain"))
+
+    assert len(episode.trajectories[0].steps) == 2
+
+
 def test_pre_action_world_model_candidate_does_not_create_step_and_can_revise_action():
     finalize_text = (
         "Reasoning.\n"
@@ -474,6 +587,67 @@ def test_post_action_simulator_keeps_auxiliary_turns_out_of_live_context_by_defa
     assert first_step_messages[-3]["rllm_simulation"] is True
     assert episode.metrics["mode_is_post_action_simulator"] == 1.0
     assert episode.metrics["simulation_present_rate"] == 1.0
+
+
+def test_post_action_simulator_does_not_duplicate_context_when_live_messages_enabled():
+    simulator_text = (
+        "Reasoning.\n"
+        "<simulation>Likely returns 4 from the python tool.</simulation>"
+    )
+    prediction_text = "Short reasoning.\n<prediction>4</prediction>"
+    _episode, workflow, rollout_engine = _run_workflow(
+        responses=["TOOL:print(2 + 2)", simulator_text, prediction_text, "FINAL 4"],
+        generative_support_cfg={
+            "mode": "post_action_simulator",
+            "enable_prediction": True,
+            "add_to_live_messages": True,
+            "add_to_step_chat_completions": True,
+        },
+    )
+
+    pred_call = next(
+        call for call in rollout_engine.calls if call["application_id"] == "task-0:pred:0"
+    )
+    simulator_prompts = [
+        message
+        for message in pred_call["messages"]
+        if message.get("role") == "user" and "SIMULATION MODE" in message.get("content", "")
+    ]
+    assert len(simulator_prompts) == 1
+    assert sum(
+        1
+        for message in pred_call["messages"]
+        if message.get("role") == "assistant"
+        and message.get("content") == simulator_text
+    ) == 1
+    assert any(message.get("rllm_simulation") for message in workflow.agent.messages)
+
+
+def test_auxiliary_turns_do_not_duplicate_reasoning_field_when_raw_text_is_kept():
+    simulator_text = (
+        "Reasoning.\n"
+        "<simulation>Likely returns 4 from the python tool.</simulation>"
+    )
+    prediction_text = "Short reasoning.\n<prediction>4</prediction>"
+    episode, _workflow, _rollout_engine = _run_workflow(
+        responses=["TOOL:print(2 + 2)", simulator_text, prediction_text, "FINAL 4"],
+        generative_support_cfg={
+            "mode": "post_action_simulator",
+            "enable_prediction": True,
+            "add_to_live_messages": False,
+            "add_to_step_chat_completions": True,
+        },
+    )
+
+    first_step_messages = episode.trajectories[0].steps[0].chat_completions
+    simulation_message = next(
+        message for message in first_step_messages if message.get("rllm_simulation")
+    )
+    prediction_message = next(
+        message for message in first_step_messages if message.get("rllm_prediction")
+    )
+    assert "reasoning" not in simulation_message
+    assert "reasoning" not in prediction_message
 
 
 def test_pre_action_imagine_then_revise_stores_imagine_record_and_keeps_it_out_of_live_context():

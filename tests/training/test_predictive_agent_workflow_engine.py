@@ -147,6 +147,32 @@ def test_compute_prediction_mask_cumulative_all_zeros_without_prediction():
     assert (mask == 0).all()
 
 
+def test_compute_prediction_mask_last_turn_only_covers_last_assistant_turn():
+    messages = [
+        {"role": "user", "content": "solve"},
+        {"role": "assistant", "content": "action"},
+        {"role": "user", "content": "predict"},
+        {"role": "assistant", "content": "result", "rllm_prediction": True},
+    ]
+    chat_parser = _DummyChatParser()
+
+    mask = PredictiveAgentWorkflowEngine._compute_prediction_mask_last_turn(
+        messages, chat_parser
+    )
+
+    response = chat_parser.parse(
+        [messages[-1]],
+        is_first_msg=False,
+        add_generation_prompt=False,
+        accumulate_reasoning=True,
+    )
+    response = response[len(chat_parser.generation_prompt) :].rstrip("\n")
+    expected_len = len(chat_parser.tokenizer.encode(response, add_special_tokens=False))
+
+    assert len(mask) == expected_len
+    assert (mask == 1).all()
+
+
 def test_build_prediction_loss_example_keeps_action_and_adds_simulator_transcript():
     step = Step(
         chat_completions=[
@@ -337,6 +363,7 @@ def test_transform_results_for_verl_stepwise_mode_computes_mask_per_step(monkeyp
     assert pred_mask.shape == (2, 64)
     assert pred_mask[0].sum() > 0
     assert pred_mask[1].sum() == 0
+    assert pred_mask[0].sum() < 64
 
 
 def test_transform_results_for_verl_non_cumulative_trajectory_falls_back_to_prediction_targets(

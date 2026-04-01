@@ -156,7 +156,10 @@ class PredictiveToolWorkflow(Workflow):
         else:
             self.trajectory_logging = TrajectoryLoggingConfig(**trajectory_logging)
 
-        support_enabled = self._active_prediction_enabled() or self._active_mode() != "none"
+        support_enabled = self._active_prediction_enabled() or (
+            self._uses_generative_support_cfg
+            and self.generative_support_cfg.mode != "none"
+        )
         if support_enabled and not isinstance(self.agent, PredictiveToolAgent):
             raise TypeError(
                 "PredictiveToolWorkflow requires PredictiveToolAgent when "
@@ -673,7 +676,7 @@ class PredictiveToolWorkflow(Workflow):
         self._append_auxiliary_turn(
             user_prompt=prediction_prompt,
             assistant_text=prediction_raw_text,
-            assistant_reasoning=prediction_reasoning,
+            assistant_reasoning="",
             assistant_flags={"rllm_prediction": True},
             add_to_live_messages=store_in_live_messages,
             add_to_step_chat_completions=store_in_step_chat_completions,
@@ -1040,7 +1043,7 @@ class PredictiveToolWorkflow(Workflow):
         self._append_auxiliary_turn(
             user_prompt=simulator_prompt,
             assistant_text=simulator_text,
-            assistant_reasoning=simulator_reasoning,
+            assistant_reasoning="",
             assistant_flags={"rllm_simulation": True},
             add_to_live_messages=self.generative_support_cfg.add_to_live_messages,
             add_to_step_chat_completions=(
@@ -1050,15 +1053,16 @@ class PredictiveToolWorkflow(Workflow):
         )
 
         prediction_base_messages = copy.deepcopy(self.agent.chat_completions)
-        prediction_base_messages.append({"role": "user", "content": simulator_prompt})
-        if simulator_text:
-            prediction_base_messages.append(
-                {
-                    "role": "assistant",
-                    "content": simulator_text,
-                    "rllm_simulation": True,
-                }
-            )
+        if not self.generative_support_cfg.add_to_live_messages:
+            prediction_base_messages.append({"role": "user", "content": simulator_prompt})
+            if simulator_text:
+                prediction_base_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": simulator_text,
+                        "rllm_simulation": True,
+                    }
+                )
 
         _, prediction_payload = await self._run_prediction_call(
             uid=uid,
