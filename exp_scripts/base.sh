@@ -28,6 +28,10 @@ PREDICTION_MAX_TOKENS="${PREDICTION_MAX_TOKENS:-256}"
 ADD_PREDICTION_TO_MESSAGES="${ADD_PREDICTION_TO_MESSAGES:-true}"
 SIMPLE_TIR="${SIMPLE_TIR:-false}"
 ENFORCE_MAX_PROMPT_LENGTH="${ENFORCE_MAX_PROMPT_LENGTH:-true}"
+GENERATIVE_SUPPORT_MODE="${GENERATIVE_SUPPORT_MODE:-}"
+ADD_GENERATIVE_SUPPORT_TO_LIVE_MESSAGES="${ADD_GENERATIVE_SUPPORT_TO_LIVE_MESSAGES:-false}"
+ADD_GENERATIVE_SUPPORT_TO_STEP_CHAT_COMPLETIONS="${ADD_GENERATIVE_SUPPORT_TO_STEP_CHAT_COMPLETIONS:-true}"
+TRAIN_GENERATIVE_WITH_PPO="${TRAIN_GENERATIVE_WITH_PPO:-true}"
 TRAJECTORY_LOGGING_ENABLED="${TRAJECTORY_LOGGING_ENABLED:-false}"
 TRAJECTORY_LOG_DIR="${TRAJECTORY_LOG_DIR:-${PROJ_DIR}/trajectory_logs}"
 
@@ -62,6 +66,7 @@ echo "Max response length: ${MAX_RESPONSE_LENGTH}"
 echo "Compact filtering enabled: ${COMPACT_FILTERING_ENABLED}"
 echo "Add prediction to messages: ${ADD_PREDICTION_TO_MESSAGES}"
 echo "Enforce max prompt length in predictive workflow: ${ENFORCE_MAX_PROMPT_LENGTH}"
+echo "Generative support mode: ${GENERATIVE_SUPPORT_MODE:-legacy}"
 
 if [[ "${TRAJECTORY_LOGGING_ENABLED}" == "true" && "${TRAIN_SCRIPT}" == *"examples/math_tool/train_math_with_tool.py" ]]; then
     echo "Warning: trajectory logging is only implemented in the predictive workflow entry script; current TRAIN_SCRIPT will ignore this flag."
@@ -153,10 +158,6 @@ CMD=(
     "rllm.stepwise_advantage.enable=False"
     "+enable_prediction=${ENABLE_PREDICTION}"
     "+enable_similarity_reward=${ENABLE_SIMILARITY_REWARD}"
-    "+prediction_cfg.max_tokens=${PREDICTION_MAX_TOKENS}"
-    "+prediction_cfg.add_prediction_to_messages=${ADD_PREDICTION_TO_MESSAGES}"
-    "+prediction_cfg.enforce_max_prompt_length=${ENFORCE_MAX_PROMPT_LENGTH}"
-    "+prediction_cfg.simple_tir=${SIMPLE_TIR}"
     "+trajectory_logging.enabled=${TRAJECTORY_LOGGING_ENABLED}"
     "+trajectory_logging.log_dir=${TRAJECTORY_LOG_DIR}"
     "+actor_rollout_ref.actor.prediction_loss_weight=${PREDICTION_LOSS_WEIGHT}"
@@ -164,6 +165,26 @@ CMD=(
     "+actor_rollout_ref.actor.prediction_temperature=${PREDICTION_TEMPERATURE}"
     "trainer.total_epochs=${TOTAL_EPOCHS}"
 )
+
+if [[ -n "${GENERATIVE_SUPPORT_MODE}" ]]; then
+    CMD+=(
+        "+generative_support_cfg.mode=${GENERATIVE_SUPPORT_MODE}"
+        "+generative_support_cfg.max_tokens=${PREDICTION_MAX_TOKENS}"
+        "+generative_support_cfg.add_to_live_messages=${ADD_GENERATIVE_SUPPORT_TO_LIVE_MESSAGES}"
+        "+generative_support_cfg.add_to_step_chat_completions=${ADD_GENERATIVE_SUPPORT_TO_STEP_CHAT_COMPLETIONS}"
+        "+generative_support_cfg.enable_prediction=${ENABLE_PREDICTION}"
+        "+generative_support_cfg.train_generative_with_ppo=${TRAIN_GENERATIVE_WITH_PPO}"
+        "+generative_support_cfg.enforce_max_prompt_length=${ENFORCE_MAX_PROMPT_LENGTH}"
+        "+generative_support_cfg.simple_tir=${SIMPLE_TIR}"
+    )
+else
+    CMD+=(
+        "+prediction_cfg.max_tokens=${PREDICTION_MAX_TOKENS}"
+        "+prediction_cfg.add_prediction_to_messages=${ADD_PREDICTION_TO_MESSAGES}"
+        "+prediction_cfg.enforce_max_prompt_length=${ENFORCE_MAX_PROMPT_LENGTH}"
+        "+prediction_cfg.simple_tir=${SIMPLE_TIR}"
+    )
+fi
 
 if [[ "${#EXTRA_HYDRA_ARGS[@]}" -gt 0 ]]; then
     CMD+=("${EXTRA_HYDRA_ARGS[@]}")

@@ -74,8 +74,13 @@ def main(config):
     # 1) top-level `prediction_cfg` (recommended for this example script)
     # 2) `rllm.workflow.workflow_args.prediction_cfg`
     prediction_cfg_from_config = {}
+    generative_support_cfg_from_config = {}
     if config.get("prediction_cfg") is not None:
         prediction_cfg_from_config = OmegaConf.to_container(config.get("prediction_cfg"), resolve=True)
+    if config.get("generative_support_cfg") is not None:
+        generative_support_cfg_from_config = OmegaConf.to_container(
+            config.get("generative_support_cfg"), resolve=True
+        )
     elif (
         config.get("rllm") is not None
         and config.rllm.get("workflow") is not None
@@ -84,6 +89,17 @@ def main(config):
     ):
         prediction_cfg_from_config = OmegaConf.to_container(
             config.rllm.workflow.workflow_args.get("prediction_cfg"),
+            resolve=True,
+        )
+    if (
+        not generative_support_cfg_from_config
+        and config.get("rllm") is not None
+        and config.rllm.get("workflow") is not None
+        and config.rllm.workflow.get("workflow_args") is not None
+        and config.rllm.workflow.workflow_args.get("generative_support_cfg") is not None
+    ):
+        generative_support_cfg_from_config = OmegaConf.to_container(
+            config.rllm.workflow.workflow_args.get("generative_support_cfg"),
             resolve=True,
         )
 
@@ -95,6 +111,20 @@ def main(config):
         "add_prediction_to_messages": True,
     }
     prediction_cfg = {**default_prediction_cfg, **prediction_cfg_from_config}
+    default_generative_support_cfg = {
+        "mode": "none",
+        "max_tokens": 256,
+        "add_to_live_messages": False,
+        "add_to_step_chat_completions": True,
+        "enable_prediction": enable_prediction,
+        "train_generative_with_ppo": True,
+        "enforce_max_prompt_length": True,
+        "simple_tir": False,
+    }
+    generative_support_cfg = {
+        **default_generative_support_cfg,
+        **generative_support_cfg_from_config,
+    }
 
     # trajectory_logging can be set either at:
     # 1) top-level `trajectory_logging` (recommended for this example script)
@@ -143,8 +173,12 @@ def main(config):
         "agent_args": agent_args,
         "env_args": env_args,
         "max_steps": int(max_steps),
-        "prediction_cfg": prediction_cfg,
     }
+    use_generative_support_cfg = bool(generative_support_cfg_from_config)
+    if use_generative_support_cfg:
+        workflow_args["generative_support_cfg"] = generative_support_cfg
+    else:
+        workflow_args["prediction_cfg"] = prediction_cfg
     if trajectory_logging_from_config:
         workflow_args["trajectory_logging"] = trajectory_logging_from_config
 
