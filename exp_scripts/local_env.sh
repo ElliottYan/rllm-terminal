@@ -22,6 +22,7 @@ pip3 install hope==3.6.8 -i http://pypi.sankuai.com/simple/ --trusted-host pypi.
 # MODEL_PATH=/mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/FMG/yanjianhao03//Qwen3-8B
 MODEL_PATH=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/yanjianhao/Qwen3-8B
 
+export WANDB_API_KEY=55cf0dbab72178987b6a6e17c443a7b0c36cb8cd
 
 # LOCAL_PWD=/mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/hadoop-aipnlp/FMG/yanjianhao/rllm-terminal
 export LOCAL_PWD=/workdir/rllm-terminal

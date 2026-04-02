@@ -77,9 +77,6 @@ if [[ "${SKIP_INSTALL}" != "1" ]]; then
     uv pip install --system -e . -i http://pypi.sankuai.com/simple/ --trusted-host pypi.sankuai.com
 fi
 
-launch="$(python3 "${RAY_LAUNCH_SCRIPT}")"
-eval "${launch}"
-
 export HYDRA_FULL_ERROR=1
 export PYTHONPATH="${LOCAL_PWD}:${PYTHONPATH:-}"
 export TENSORBOARD_DIR="${TENSORBOARD_DIR:-${LOCAL_PWD}/tensorboard/${EXP}}"
@@ -87,9 +84,8 @@ mkdir -p "${TENSORBOARD_DIR}"
 
 export RAY_DEBUG=legacy
 
-export WANDB_API_KEY=55cf0dbab72178987b6a6e17c443a7b0c36cb8cd
-
-export WANDB_MODE=offline
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
 
 export WANDB_DIR=$LOCAL_PWD/wandb-agent
 export WANDB_CACHE_DIR=$WANDB_DIR/.cache/wandb
@@ -101,6 +97,9 @@ mkdir -p $WANDB_CACHE_DIR
 mkdir -p $WANDB_CONFIG_DIR
 mkdir -p $WANDB_DATA_DIR
 mkdir -p $WANDB_ARTIFACT_DIR
+
+launch="$(python3 "${RAY_LAUNCH_SCRIPT}")"
+eval "${launch}"
 
 
 CMD=(
