@@ -132,7 +132,21 @@ class AgentWorkflowPPOTrainer(RayPPOTrainer):
 
         for epoch in range(self.config.trainer.total_epochs):
             pprint(f"epoch {epoch}, step {self.global_steps} started")
-            for batch_dict in self.train_dataloader:
+            train_dataloader_iter = iter(self.train_dataloader)
+            batch_idx = 0
+            while True:
+                pprint(
+                    f"epoch {epoch}, step {self.global_steps}: waiting for next train batch"
+                )
+                try:
+                    batch_dict = next(train_dataloader_iter)
+                except StopIteration:
+                    break
+
+                batch_idx += 1
+                pprint(
+                    f"epoch {epoch}, step {self.global_steps}: fetched train batch {batch_idx}"
+                )
                 do_profile = self.global_steps in self.config.trainer.profile_steps if self.config.trainer.profile_steps is not None else False
                 with marked_timer("start_profile", timing_raw):
                     self._start_profiling(do_profile)
