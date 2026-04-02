@@ -87,6 +87,8 @@ mkdir -p "${TENSORBOARD_DIR}"
 
 export RAY_DEBUG=legacy
 
+export WANDB_API_KEY=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
+
 export WANDB_MODE=offline
 
 export WANDB_DIR=$LOCAL_PWD/wandb-agent

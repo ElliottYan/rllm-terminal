@@ -1,9 +1,9 @@
 import hydra
 import os
 
+from dataset_loader import load_dataset_with_path_override
 from hydra.utils import get_original_cwd
 from omegaconf import OmegaConf
-from rllm.data.dataset import DatasetRegistry
 from rllm.rewards.reward_fn import math_reward_fn
 from rllm.trainer.agent_trainer import AgentTrainer
 
@@ -50,8 +50,8 @@ def main(config):
     # Ensure directory exists
     os.makedirs(os.environ["TENSORBOARD_DIR"], exist_ok=True)
 
-    train_dataset = DatasetRegistry.load_dataset("deepscaler_math", "train")
-    test_dataset = DatasetRegistry.load_dataset("aime2024", "test")
+    train_dataset = load_dataset_with_path_override(config, "deepscaler_math", "train")
+    test_dataset = load_dataset_with_path_override(config, "aime2024", "test")
 
     # Enable workflow training path
     config.rllm.workflow.use_workflow = True
