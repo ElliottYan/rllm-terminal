@@ -87,7 +87,7 @@ mkdir -p "${TENSORBOARD_DIR}"
 
 export RAY_DEBUG=legacy
 
-export WANDB_API_KEY=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
+export WANDB_API_KEY=55cf0dbab72178987b6a6e17c443a7b0c36cb8cd
 
 export WANDB_MODE=offline
 
@@ -186,6 +186,14 @@ else
         "+prediction_cfg.enforce_max_prompt_length=${ENFORCE_MAX_PROMPT_LENGTH}"
         "+prediction_cfg.simple_tir=${SIMPLE_TIR}"
     )
+fi
+
+if [[ -n "${TRAIN_DATASET_PATH:-}" ]]; then
+    CMD+=("+train_dataset_path=${TRAIN_DATASET_PATH}")
+fi
+
+if [[ -n "${TEST_DATASET_PATH:-}" ]]; then
+    CMD+=("+test_dataset_path=${TEST_DATASET_PATH}")
 fi
 
 if [[ "${#EXTRA_HYDRA_ARGS[@]}" -gt 0 ]]; then
