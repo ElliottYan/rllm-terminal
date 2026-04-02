@@ -10,7 +10,7 @@ echo "Current directory: $CURRENT_DIR"
 if [[ "$CURRENT_DIR" == /mnt/dolphinfs/ssd_pool/docker/user/hadoop-nlp-sh02/* ]]; then
     echo "Detected ssd_pool path, sourcing sh_env.sh..."
     source $(dirname "$0")/sh_env.sh
-if [[ "$CURRENT_DIR" == /workdir/rllm-terminal/* ]]; then
+elif [[ "$CURRENT_DIR" == /workdir/rllm-terminal/* ]]; then
     echo "Detected ssd_pool path, sourcing sh_env.sh..."
     source $(dirname "$0")/sh_env.sh
 elif [[ "$CURRENT_DIR" == /mnt/dolphinfs/hdd_pool/docker/user/hadoop-aipnlp/* ]]; then
