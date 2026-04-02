@@ -89,7 +89,7 @@ export RAY_DEBUG=legacy
 
 export WANDB_MODE=offline
 
-export WANDB_DIR=$LOCAL_PWD/wandb-negative
+export WANDB_DIR=$LOCAL_PWD/wandb-agent
 export WANDB_CACHE_DIR=$WANDB_DIR/.cache/wandb
 export WANDB_CONFIG_DIR=$WANDB_DIR/.config/wandb
 export WANDB_DATA_DIR=$WANDB_DIR/.config/wandb-data
