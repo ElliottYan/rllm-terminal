@@ -389,6 +389,32 @@ class PredictiveActor(DataParallelPPOActor):
         self._prediction_chat_parser = parser
         return parser
 
+    def _get_distributed_max_example_count(self, local_count: int) -> int:
+        """
+        Synchronize the auxiliary-example count across ranks.
+
+        Some ranks can legitimately have zero prediction targets in a PPO
+        micro-batch while others still have several. We must still run the same
+        number of auxiliary forwards/backwards on every rank, otherwise FSDP/NCCL
+        can hang because collectives no longer line up.
+        """
+        if (
+            not torch.distributed.is_available()
+            or not torch.distributed.is_initialized()
+        ):
+            return int(local_count)
+
+        device = next(self.actor_module.parameters()).device
+        count_tensor = torch.tensor(
+            [int(local_count)],
+            dtype=torch.long,
+            device=device,
+        )
+        torch.distributed.all_reduce(
+            count_tensor, op=torch.distributed.ReduceOp.MAX
+        )
+        return int(count_tensor.item())
+
     def _compute_cross_entropy_prediction_loss(
         self,
         prediction_examples: list[dict[str, Any]],
@@ -443,6 +469,14 @@ class PredictiveActor(DataParallelPPOActor):
             label_id_lists.append(label_ids)
 
         if not input_id_lists:
+            local_example_count = 0
+        else:
+            local_example_count = len(input_id_lists)
+
+        target_example_count = self._get_distributed_max_example_count(
+            local_example_count
+        )
+        if target_example_count <= 0:
             return None
 
         pad_token_id = tokenizer.pad_token_id
@@ -450,12 +484,20 @@ class PredictiveActor(DataParallelPPOActor):
         if pad_token_id is None:
             pad_token_id = eos_token_id if eos_token_id is not None else 0
 
+        if local_example_count < target_example_count:
+            pad_count = target_example_count - local_example_count
+            # Pad with dummy rows so every rank executes the same number of
+            # auxiliary forward/backward graphs. Dummy rows carry no supervised
+            # labels, so they contribute zero gradient.
+            input_id_lists.extend([[pad_token_id]] * pad_count)
+            label_id_lists.extend([[-100]] * pad_count)
+
         device = next(self.actor_module.parameters()).device
         total_loss_sum = None
         total_token_count = 0
         chunk_size = min(
             self.prediction_loss_forward_batch_size,
-            len(input_id_lists),
+            target_example_count,
         )
 
         # Prediction targets can explode when a whole multi-step trajectory is
@@ -495,6 +537,12 @@ class PredictiveActor(DataParallelPPOActor):
             shift_labels = labels[..., 1:].contiguous()
             valid_token_count = int((shift_labels != -100).sum().item())
             if valid_token_count == 0:
+                zero_loss = shift_logits.sum() * 0
+                total_loss_sum = (
+                    zero_loss
+                    if total_loss_sum is None
+                    else total_loss_sum + zero_loss
+                )
                 continue
 
             loss_sum = F.cross_entropy(
@@ -508,10 +556,10 @@ class PredictiveActor(DataParallelPPOActor):
             )
             total_token_count += valid_token_count
 
-        if total_loss_sum is None or total_token_count == 0:
+        if total_loss_sum is None:
             return None
 
-        return total_loss_sum / total_token_count
+        return total_loss_sum / max(total_token_count, 1)
 
 
 # Register a factory function to create PredictiveActor

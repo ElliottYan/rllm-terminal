@@ -1,4 +1,4 @@
-import torch
+igtimport torch
 import torch.nn.functional as F
 from types import SimpleNamespace
 
@@ -113,3 +113,35 @@ def test_prediction_ce_loss_chunks_large_aux_batches():
     assert loss is not None
     assert torch.isfinite(loss)
     assert actor.actor_module.batch_sizes == [2, 2, 1]
+
+
+def test_prediction_ce_loss_pads_aux_batches_to_distributed_max():
+    actor = PredictiveActor.__new__(PredictiveActor)
+    actor.config = {
+        "prediction_loss_max_length": 32,
+        "prediction_loss_forward_batch_size": 2,
+    }
+    actor.actor_module = _RecordingActorModule()
+    actor.device_name = "cpu"
+    actor.prediction_temperature = 1.0
+    actor.prediction_loss_forward_batch_size = 2
+    actor._resolve_prediction_chat_parser = lambda tokenizer: _DummyChatParser()
+    actor._get_distributed_max_example_count = lambda local_count: 3
+
+    prediction_examples = [
+        {
+            "prompt_messages": [
+                {"role": "user", "content": "prompt-0"},
+            ],
+            "target_text": "target-0",
+        }
+    ]
+
+    loss = actor._compute_cross_entropy_prediction_loss(
+        prediction_examples=prediction_examples,
+        tokenizer=_DummyTokenizer(),
+    )
+
+    assert loss is not None
+    assert torch.isfinite(loss)
+    assert actor.actor_module.batch_sizes == [2, 1]
