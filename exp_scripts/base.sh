@@ -39,6 +39,7 @@ TRAJECTORY_LOG_DIR="${TRAJECTORY_LOG_DIR:-${PROJ_DIR}/trajectory_logs}"
 PREDICTION_LOSS_WEIGHT="${PREDICTION_LOSS_WEIGHT:-0.0}"
 PREDICTION_LOSS_TYPE="${PREDICTION_LOSS_TYPE:-cross_entropy}"
 PREDICTION_TEMPERATURE="${PREDICTION_TEMPERATURE:-1.0}"
+PREDICTION_LOSS_FORWARD_BATCH_SIZE="${PREDICTION_LOSS_FORWARD_BATCH_SIZE:-1}"
 
 SAVE_FREQ="${SAVE_FREQ:-1}"
 
@@ -167,6 +168,7 @@ CMD=(
     "+actor_rollout_ref.actor.prediction_loss_weight=${PREDICTION_LOSS_WEIGHT}"
     "+actor_rollout_ref.actor.prediction_loss_type=${PREDICTION_LOSS_TYPE}"
     "+actor_rollout_ref.actor.prediction_temperature=${PREDICTION_TEMPERATURE}"
+    "+actor_rollout_ref.actor.prediction_loss_forward_batch_size=${PREDICTION_LOSS_FORWARD_BATCH_SIZE}"
     "trainer.total_epochs=${TOTAL_EPOCHS}"
 )
 

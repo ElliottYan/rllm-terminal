@@ -47,11 +47,19 @@ class PredictiveActor(DataParallelPPOActor):
         self.prediction_loss_weight = config.get("prediction_loss_weight", 0.1)
         self.prediction_loss_type = config.get("prediction_loss_type", "cross_entropy")
         self.prediction_temperature = config.get("prediction_temperature", 1.0)
+        self.prediction_loss_forward_batch_size = max(
+            int(config.get("prediction_loss_forward_batch_size", 8)),
+            1,
+        )
 
         if torch.distributed.get_rank() == 0:
             logger.info("PredictiveActor initialized with:")
             logger.info(f"  prediction_loss_weight: {self.prediction_loss_weight}")
             logger.info(f"  prediction_loss_type: {self.prediction_loss_type}")
+            logger.info(
+                "  prediction_loss_forward_batch_size: %s",
+                self.prediction_loss_forward_batch_size,
+            )
 
     def update_policy(self, data: DataProto) -> dict:
         """
@@ -442,42 +450,68 @@ class PredictiveActor(DataParallelPPOActor):
         if pad_token_id is None:
             pad_token_id = eos_token_id if eos_token_id is not None else 0
 
-        max_seq_len = max(len(ids) for ids in input_id_lists)
-        padded_inputs = []
-        padded_labels = []
-        padded_attn_mask = []
-        for input_ids, label_ids in zip(input_id_lists, label_id_lists):
-            pad_len = max_seq_len - len(input_ids)
-            padded_inputs.append(input_ids + [pad_token_id] * pad_len)
-            padded_labels.append(label_ids + [-100] * pad_len)
-            padded_attn_mask.append([1] * len(input_ids) + [0] * pad_len)
-
         device = next(self.actor_module.parameters()).device
-        input_ids = torch.tensor(padded_inputs, dtype=torch.long, device=device)
-        attention_mask = torch.tensor(
-            padded_attn_mask, dtype=torch.long, device=device
+        total_loss_sum = None
+        total_token_count = 0
+        chunk_size = min(
+            self.prediction_loss_forward_batch_size,
+            len(input_id_lists),
         )
-        labels = torch.tensor(padded_labels, dtype=torch.long, device=device)
 
-        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
-            outputs = self.actor_module(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                use_cache=False,
+        # Prediction targets can explode when a whole multi-step trajectory is
+        # reconstructed into one supervised micro-batch. Run them in smaller
+        # chunks so actor update does not create one giant auxiliary forward.
+        for chunk_start in range(0, len(input_id_lists), chunk_size):
+            chunk_inputs = input_id_lists[chunk_start : chunk_start + chunk_size]
+            chunk_labels = label_id_lists[chunk_start : chunk_start + chunk_size]
+            max_seq_len = max(len(ids) for ids in chunk_inputs)
+
+            padded_inputs = []
+            padded_labels = []
+            padded_attn_mask = []
+            for input_ids, label_ids in zip(chunk_inputs, chunk_labels):
+                pad_len = max_seq_len - len(input_ids)
+                padded_inputs.append(input_ids + [pad_token_id] * pad_len)
+                padded_labels.append(label_ids + [-100] * pad_len)
+                padded_attn_mask.append([1] * len(input_ids) + [0] * pad_len)
+
+            input_ids = torch.tensor(padded_inputs, dtype=torch.long, device=device)
+            attention_mask = torch.tensor(
+                padded_attn_mask, dtype=torch.long, device=device
             )
-            logits = outputs.logits
-            if self.prediction_temperature != 1.0:
-                logits = logits / self.prediction_temperature
+            labels = torch.tensor(padded_labels, dtype=torch.long, device=device)
 
-        shift_logits = logits[..., :-1, :].contiguous()
-        shift_labels = labels[..., 1:].contiguous()
+            with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+                outputs = self.actor_module(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                )
+                logits = outputs.logits
+                if self.prediction_temperature != 1.0:
+                    logits = logits / self.prediction_temperature
 
-        return F.cross_entropy(
-            shift_logits.reshape(-1, shift_logits.size(-1)),
-            shift_labels.reshape(-1),
-            ignore_index=-100,
-            reduction="mean",
-        )
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            valid_token_count = int((shift_labels != -100).sum().item())
+            if valid_token_count == 0:
+                continue
+
+            loss_sum = F.cross_entropy(
+                shift_logits.reshape(-1, shift_logits.size(-1)),
+                shift_labels.reshape(-1),
+                ignore_index=-100,
+                reduction="sum",
+            )
+            total_loss_sum = (
+                loss_sum if total_loss_sum is None else total_loss_sum + loss_sum
+            )
+            total_token_count += valid_token_count
+
+        if total_loss_sum is None or total_token_count == 0:
+            return None
+
+        return total_loss_sum / total_token_count
 
 
 # Register a factory function to create PredictiveActor
